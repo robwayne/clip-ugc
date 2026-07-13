@@ -37,6 +37,10 @@ interface EditorState {
   activeGroupId: string | null;
   /** Currently highlighted segment (shared between timeline and list). */
   selectedSegmentId: string | null;
+  /** Segment currently being recorded via the S key (open, awaiting E). */
+  openSegmentId: string | null;
+  /** Most recently closed segment, so a repeated E can adjust its end. */
+  lastClosedSegmentId: string | null;
 }
 
 interface AppContextValue {
@@ -55,6 +59,10 @@ interface AppContextValue {
   duplicateSegment: (id: string) => void;
   moveSegmentWithinGroup: (id: string, direction: -1 | 1) => void;
   setSelectedSegment: (id: string | null) => void;
+  /** S key: open a segment at `time`, or reset the open segment's start. */
+  markStart: (time: number) => void;
+  /** E key: close the open segment at `time`, or adjust the last one's end. */
+  markEnd: (time: number) => void;
 
   // Groups
   addGroup: (name?: string) => string;
@@ -85,8 +93,13 @@ function emptyEditor(): EditorState {
     groups: [],
     activeGroupId: null,
     selectedSegmentId: null,
+    openSegmentId: null,
+    lastClosedSegmentId: null,
   };
 }
+
+/** Minimum clip length used when opening/adjusting via keyboard. */
+const MIN_SEGMENT = 0.05;
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [view, setView] = useState<View>('editor');
@@ -146,7 +159,75 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ...e,
       segments: e.segments.filter((s) => s.id !== id),
       selectedSegmentId: e.selectedSegmentId === id ? null : e.selectedSegmentId,
+      openSegmentId: e.openSegmentId === id ? null : e.openSegmentId,
+      lastClosedSegmentId: e.lastClosedSegmentId === id ? null : e.lastClosedSegmentId,
     }));
+  }, []);
+
+  // S key. When a segment is already open, reset its start; otherwise open a
+  // new segment at `time`, inheriting the group of the most recent segment.
+  const markStart = useCallback((time: number) => {
+    const id = makeId();
+    setEditor((e) => {
+      if (e.openSegmentId) {
+        return {
+          ...e,
+          segments: e.segments.map((s) =>
+            s.id === e.openSegmentId
+              ? { ...s, start: time, end: Math.max(s.end, time + MIN_SEGMENT) }
+              : s
+          ),
+        };
+      }
+      const prev = e.segments[e.segments.length - 1];
+      const groupId = prev ? prev.groupId : e.activeGroupId;
+      const newSeg: Segment = {
+        id,
+        start: time,
+        end: time + MIN_SEGMENT,
+        groupId: groupId ?? null,
+      };
+      return {
+        ...e,
+        segments: [...e.segments, newSeg],
+        openSegmentId: id,
+        selectedSegmentId: id,
+      };
+    });
+  }, []);
+
+  // E key. Close the open segment at `time`; if none is open, adjust the end of
+  // the most recently closed segment instead.
+  const markEnd = useCallback((time: number) => {
+    setEditor((e) => {
+      if (e.openSegmentId) {
+        const openId = e.openSegmentId;
+        return {
+          ...e,
+          segments: e.segments.map((s) =>
+            s.id === openId
+              ? { ...s, end: Math.max(time, s.start + MIN_SEGMENT) }
+              : s
+          ),
+          openSegmentId: null,
+          lastClosedSegmentId: openId,
+          selectedSegmentId: openId,
+        };
+      }
+      if (e.lastClosedSegmentId) {
+        const lastId = e.lastClosedSegmentId;
+        return {
+          ...e,
+          segments: e.segments.map((s) =>
+            s.id === lastId
+              ? { ...s, end: Math.max(time, s.start + MIN_SEGMENT) }
+              : s
+          ),
+          selectedSegmentId: lastId,
+        };
+      }
+      return e;
+    });
   }, []);
 
   const duplicateSegment = useCallback((id: string) => {
@@ -269,6 +350,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         })),
         activeGroupId: null,
         selectedSegmentId: null,
+        openSegmentId: null,
+        lastClosedSegmentId: null,
       };
     });
     setView('editor');
@@ -294,6 +377,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       duplicateSegment,
       moveSegmentWithinGroup,
       setSelectedSegment,
+      markStart,
+      markEnd,
       addGroup,
       renameGroup,
       removeGroup,
@@ -317,6 +402,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       duplicateSegment,
       moveSegmentWithinGroup,
       setSelectedSegment,
+      markStart,
+      markEnd,
       addGroup,
       renameGroup,
       removeGroup,

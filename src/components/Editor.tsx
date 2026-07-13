@@ -10,7 +10,7 @@ import { SegmentList } from './SegmentList';
 import { RenderPanel } from './RenderPanel';
 
 export function Editor() {
-  const { editor, setTitle } = useApp();
+  const { editor, setTitle, markStart, markEnd } = useApp();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
@@ -44,6 +44,35 @@ export function Editor() {
   }, [objectUrl]);
 
   const getCurrentTime = useCallback(() => videoRef.current?.currentTime ?? 0, []);
+
+  // Keyboard shortcuts: S marks a segment start, E marks the end. Active only
+  // when a video is loaded and focus isn't in a text field / control.
+  useEffect(() => {
+    if (!objectUrl) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (
+        el?.isContentEditable ||
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT'
+      ) {
+        return;
+      }
+      const key = e.key.toLowerCase();
+      if (key === 's') {
+        e.preventDefault();
+        markStart(videoRef.current?.currentTime ?? 0);
+      } else if (key === 'e') {
+        e.preventDefault();
+        markEnd(videoRef.current?.currentTime ?? 0);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [objectUrl, markStart, markEnd]);
 
   const seekTo = useCallback((seconds: number) => {
     const video = videoRef.current;

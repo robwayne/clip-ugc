@@ -189,10 +189,12 @@ export function Timeline({ duration, currentTime, onSeek }: TimelineProps) {
 
   return (
     <div className="card">
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">Timeline</h2>
         <p className="text-xs text-white/40">
-          Drag empty space to create · drag a bar to move · drag its edges to trim
+          Drag empty space to create · drag a bar to move · drag its edges to trim ·
+          press <kbd className="rounded bg-white/10 px-1">S</kbd>/
+          <kbd className="rounded bg-white/10 px-1">E</kbd> to mark start/end
         </p>
       </div>
 
@@ -239,13 +241,18 @@ export function Timeline({ duration, currentTime, onSeek }: TimelineProps) {
           ) * 100;
           const color = seg.groupId ? groupColor.get(seg.groupId) ?? '#64748b' : '#64748b';
           const selected = editor.selectedSegmentId === seg.id;
+          const recording = editor.openSegmentId === seg.id;
 
           return (
             <div
               key={seg.id}
               onPointerDown={(e) => onBodyPointerDown(e, seg.id)}
               className={`group absolute flex items-center overflow-hidden rounded-md text-[10px] font-medium text-white shadow-sm ${
-                selected ? 'ring-2 ring-white' : 'ring-1 ring-black/30'
+                recording
+                  ? 'z-[5] animate-pulse ring-2 ring-red-400'
+                  : selected
+                  ? 'ring-2 ring-white'
+                  : 'ring-1 ring-black/30'
               } ${valid ? 'cursor-grab active:cursor-grabbing' : 'opacity-60'}`}
               style={{
                 left: `${left}%`,
@@ -264,6 +271,7 @@ export function Timeline({ duration, currentTime, onSeek }: TimelineProps) {
                 className="absolute left-0 top-0 h-full w-2 cursor-ew-resize bg-white/30 opacity-0 transition-opacity group-hover:opacity-100"
               />
               <span className="pointer-events-none truncate px-2.5">
+                {recording ? '● REC ' : ''}
                 {formatTimestamp(seg.start)}–{formatTimestamp(seg.end)}
               </span>
               {/* end handle */}
@@ -285,7 +293,14 @@ export function Timeline({ duration, currentTime, onSeek }: TimelineProps) {
       </div>
 
       <div className="mt-2 flex items-center justify-between text-xs text-white/40">
-        <span className="font-mono">Playhead {formatTimestamp(currentTime, true)}</span>
+        <span className="font-mono">
+          Playhead {formatTimestamp(currentTime, true)}
+          {editor.openSegmentId && (
+            <span className="ml-2 animate-pulse font-sans font-medium text-red-400">
+              ● Recording — press E to set end
+            </span>
+          )}
+        </span>
         <button
           className="btn-ghost px-2 py-1 text-xs"
           onClick={() => addSegment({ start: currentTime, end: Math.min(duration, currentTime + 5) })}

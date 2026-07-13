@@ -105,6 +105,7 @@ export function SegmentList({
                     duration={duration}
                     groups={editor.groups}
                     selected={editor.selectedSegmentId === segment.id}
+                    open={editor.openSegmentId === segment.id}
                     onSelect={() => setSelectedSegment(segment.id)}
                     onUpdate={(patch) => updateSegment(segment.id, patch)}
                     onRemove={() => removeSegment(segment.id)}

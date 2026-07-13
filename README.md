@@ -16,6 +16,11 @@ machine, and no server-side storage is required.
 - **Visual timeline** — a draggable track under the player: drag empty space to
   create a segment, drag a bar to move it, drag its edges to trim, and click to
   seek. Overlapping segments stack into lanes and are color-coded by group.
+- **Keyboard in/out marking** — press <kbd>S</kbd> while the video plays to open a
+  segment at the current time and <kbd>E</kbd> to set its end and close it. New
+  segments inherit the previous segment's group. Pressing <kbd>S</kbd> again before
+  closing resets the open segment's start; pressing <kbd>E</kbd> again after
+  closing (before the next <kbd>S</kbd>) adjusts the last segment's end.
 - **Groups** — organize segments into named, colored groups. Each group splices
   on its own (individually downloadable), and all groups are stitched together in
   order into the final video. Segments can be duplicated (independent copies), so

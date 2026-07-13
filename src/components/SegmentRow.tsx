@@ -10,6 +10,7 @@ interface SegmentRowProps {
   duration: number | null;
   groups: Group[];
   selected: boolean;
+  open: boolean;
   onSelect: () => void;
   onUpdate: (patch: Partial<Segment>) => void;
   onRemove: () => void;
@@ -28,6 +29,7 @@ export function SegmentRow({
   duration,
   groups,
   selected,
+  open,
   onSelect,
   onUpdate,
   onRemove,
@@ -47,7 +49,9 @@ export function SegmentRow({
     <li
       onClick={onSelect}
       className={`rounded-lg border p-3 transition-colors ${
-        selected
+        open
+          ? 'border-red-400/60 bg-red-500/[0.06]'
+          : selected
           ? 'border-white/40 bg-white/[0.06]'
           : invalid || outOfRange
           ? 'border-amber-500/40 bg-amber-500/[0.04]'
@@ -55,8 +59,12 @@ export function SegmentRow({
       }`}
     >
       <div className="flex flex-wrap items-end gap-3">
-        <span className="mb-2 flex h-6 min-w-[1.5rem] shrink-0 items-center justify-center rounded-full bg-brand-600/30 px-1.5 text-xs font-semibold text-brand-100">
-          {label}
+        <span
+          className={`mb-2 flex h-6 min-w-[1.5rem] shrink-0 items-center justify-center rounded-full px-1.5 text-xs font-semibold ${
+            open ? 'animate-pulse bg-red-500/40 text-red-100' : 'bg-brand-600/30 text-brand-100'
+          }`}
+        >
+          {open ? '●' : label}
         </span>
 
         <TimeField
