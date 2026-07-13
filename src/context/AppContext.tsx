@@ -1,9 +1,9 @@
 'use client';
 
-// App-wide state: the current editor session (source file + segments) plus the
-// persisted history. Kept in a context so switching between the Editor and
-// History views preserves the in-memory File (letting users retry edits without
-// reselecting), while history itself survives reloads via localStorage.
+// App-wide state: the current editor session (source file, segments, groups)
+// plus the persisted history. Kept in a context so switching between the Editor
+// and History views preserves the in-memory File (letting users retry edits
+// without reselecting), while history survives reloads via localStorage.
 import {
   createContext,
   useContext,
@@ -13,8 +13,9 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import type { ClipSession, Segment, SourceMeta } from '@/lib/types';
+import type { ClipSession, Group, Segment, SourceMeta } from '@/lib/types';
 import { makeId } from '@/lib/id';
+import { nextGroupColor } from '@/lib/groups';
 import {
   buildSession,
   deleteSession as deleteFromStore,
@@ -25,15 +26,17 @@ import {
 export type View = 'editor' | 'history';
 
 interface EditorState {
-  /** Stable id so re-saving updates the same history entry. */
   sessionId: string;
   createdAt: number;
   title: string;
-  /** The live source file, if available in this session. */
   file: File | null;
-  /** Source metadata (persists even when the file is gone). */
   source: SourceMeta | null;
   segments: Segment[];
+  groups: Group[];
+  /** New segments are assigned to this group (null = ungrouped). */
+  activeGroupId: string | null;
+  /** Currently highlighted segment (shared between timeline and list). */
+  selectedSegmentId: string | null;
 }
 
 interface AppContextValue {
@@ -44,10 +47,21 @@ interface AppContextValue {
   setTitle: (title: string) => void;
   setSourceFile: (file: File, source: SourceMeta) => void;
   clearSource: () => void;
-  setSegments: (segments: Segment[]) => void;
-  addSegment: (segment?: Partial<Segment>) => void;
+
+  // Segments
+  addSegment: (segment?: Partial<Segment>) => string;
   updateSegment: (id: string, patch: Partial<Segment>) => void;
   removeSegment: (id: string) => void;
+  duplicateSegment: (id: string) => void;
+  moveSegmentWithinGroup: (id: string, direction: -1 | 1) => void;
+  setSelectedSegment: (id: string | null) => void;
+
+  // Groups
+  addGroup: (name?: string) => string;
+  renameGroup: (id: string, name: string) => void;
+  removeGroup: (id: string) => void;
+  setActiveGroup: (id: string | null) => void;
+
   resetEditor: () => void;
 
   history: ClipSession[];
@@ -55,7 +69,6 @@ interface AppContextValue {
   openSession: (session: ClipSession) => void;
   deleteSession: (id: string) => void;
 
-  /** True when a stored session was opened but its file needs reselecting. */
   needsReselect: boolean;
 }
 
@@ -69,6 +82,9 @@ function emptyEditor(): EditorState {
     file: null,
     source: null,
     segments: [],
+    groups: [],
+    activeGroupId: null,
+    selectedSegmentId: null,
   };
 }
 
@@ -98,23 +114,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setEditor((e) => ({ ...e, file: null }));
   }, []);
 
-  const setSegments = useCallback((segments: Segment[]) => {
-    setEditor((e) => ({ ...e, segments }));
-  }, []);
-
   const addSegment = useCallback((segment?: Partial<Segment>) => {
+    const id = makeId();
     setEditor((e) => {
-      const last = e.segments[e.segments.length - 1];
+      const groupId =
+        segment?.groupId !== undefined ? segment.groupId : e.activeGroupId;
+      const siblings = e.segments.filter((s) => s.groupId === groupId);
+      const last = siblings[siblings.length - 1];
       const defaultStart = segment?.start ?? (last ? last.end : 0);
       const defaultEnd = segment?.end ?? defaultStart + 5;
-      return {
-        ...e,
-        segments: [
-          ...e.segments,
-          { id: makeId(), start: defaultStart, end: defaultEnd },
-        ],
+      const newSeg: Segment = {
+        id,
+        start: defaultStart,
+        end: defaultEnd,
+        groupId: groupId ?? null,
       };
+      return { ...e, segments: [...e.segments, newSeg], selectedSegmentId: id };
     });
+    return id;
   }, []);
 
   const updateSegment = useCallback((id: string, patch: Partial<Segment>) => {
@@ -125,35 +142,111 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const removeSegment = useCallback((id: string) => {
-    setEditor((e) => ({ ...e, segments: e.segments.filter((s) => s.id !== id) }));
+    setEditor((e) => ({
+      ...e,
+      segments: e.segments.filter((s) => s.id !== id),
+      selectedSegmentId: e.selectedSegmentId === id ? null : e.selectedSegmentId,
+    }));
+  }, []);
+
+  const duplicateSegment = useCallback((id: string) => {
+    const newId = makeId();
+    setEditor((e) => {
+      const idx = e.segments.findIndex((s) => s.id === id);
+      if (idx < 0) return e;
+      const original = e.segments[idx];
+      const copy: Segment = { ...original, id: newId };
+      const segments = [...e.segments];
+      segments.splice(idx + 1, 0, copy);
+      return { ...e, segments, selectedSegmentId: newId };
+    });
+  }, []);
+
+  const moveSegmentWithinGroup = useCallback((id: string, direction: -1 | 1) => {
+    setEditor((e) => {
+      const idx = e.segments.findIndex((s) => s.id === id);
+      if (idx < 0) return e;
+      const groupId = e.segments[idx].groupId;
+      // Find the neighbor in the same group in the given direction.
+      let swapIdx = -1;
+      for (
+        let j = idx + direction;
+        j >= 0 && j < e.segments.length;
+        j += direction
+      ) {
+        if (e.segments[j].groupId === groupId) {
+          swapIdx = j;
+          break;
+        }
+      }
+      if (swapIdx < 0) return e;
+      const segments = [...e.segments];
+      [segments[idx], segments[swapIdx]] = [segments[swapIdx], segments[idx]];
+      return { ...e, segments };
+    });
+  }, []);
+
+  const setSelectedSegment = useCallback((id: string | null) => {
+    setEditor((e) => ({ ...e, selectedSegmentId: id }));
+  }, []);
+
+  const addGroup = useCallback((name?: string) => {
+    const id = makeId();
+    setEditor((e) => {
+      const group: Group = {
+        id,
+        name: name?.trim() || `Group ${e.groups.length + 1}`,
+        color: nextGroupColor(e.groups),
+      };
+      return { ...e, groups: [...e.groups, group], activeGroupId: id };
+    });
+    return id;
+  }, []);
+
+  const renameGroup = useCallback((id: string, name: string) => {
+    setEditor((e) => ({
+      ...e,
+      groups: e.groups.map((g) => (g.id === id ? { ...g, name } : g)),
+    }));
+  }, []);
+
+  const removeGroup = useCallback((id: string) => {
+    setEditor((e) => ({
+      ...e,
+      groups: e.groups.filter((g) => g.id !== id),
+      // Segments in the removed group fall back to ungrouped.
+      segments: e.segments.map((s) => (s.groupId === id ? { ...s, groupId: null } : s)),
+      activeGroupId: e.activeGroupId === id ? null : e.activeGroupId,
+    }));
+  }, []);
+
+  const setActiveGroup = useCallback((id: string | null) => {
+    setEditor((e) => ({ ...e, activeGroupId: id }));
   }, []);
 
   const resetEditor = useCallback(() => {
     setEditor(emptyEditor());
   }, []);
 
-  const saveCurrentSession = useCallback(
-    (outputName?: string) => {
-      setEditor((e) => {
-        if (!e.source) return e;
-        const session = buildSession({
-          id: e.sessionId,
-          createdAt: e.createdAt,
-          title: e.title.trim() || e.source.name,
-          source: e.source,
-          segments: e.segments,
-          outputName: outputName ?? `${e.title.trim() || 'output'}.mp4`,
-        });
-        setHistory(upsertSession(session));
-        return e;
+  const saveCurrentSession = useCallback((outputName?: string) => {
+    setEditor((e) => {
+      if (!e.source) return e;
+      const session = buildSession({
+        id: e.sessionId,
+        createdAt: e.createdAt,
+        title: e.title.trim() || e.source.name,
+        source: e.source,
+        segments: e.segments,
+        groups: e.groups,
+        outputName: outputName ?? `${e.title.trim() || 'output'}.mp4`,
       });
-    },
-    []
-  );
+      setHistory(upsertSession(session));
+      return e;
+    });
+  }, []);
 
   const openSession = useCallback((session: ClipSession) => {
     setEditor((prev) => {
-      // If the currently loaded file matches this session's source, keep it.
       const keepFile =
         prev.file &&
         prev.source &&
@@ -167,11 +260,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         title: session.title,
         file: keepFile,
         source: session.source,
+        groups: (session.groups ?? []).map((g) => ({ ...g })),
         segments: session.segments.map((s) => ({
           id: makeId(),
           start: s.start,
           end: s.end,
+          groupId: s.groupId ?? null,
         })),
+        activeGroupId: null,
+        selectedSegmentId: null,
       };
     });
     setView('editor');
@@ -191,10 +288,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setTitle,
       setSourceFile,
       clearSource,
-      setSegments,
       addSegment,
       updateSegment,
       removeSegment,
+      duplicateSegment,
+      moveSegmentWithinGroup,
+      setSelectedSegment,
+      addGroup,
+      renameGroup,
+      removeGroup,
+      setActiveGroup,
       resetEditor,
       history,
       saveCurrentSession,
@@ -208,10 +311,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setTitle,
       setSourceFile,
       clearSource,
-      setSegments,
       addSegment,
       updateSegment,
       removeSegment,
+      duplicateSegment,
+      moveSegmentWithinGroup,
+      setSelectedSegment,
+      addGroup,
+      renameGroup,
+      removeGroup,
+      setActiveGroup,
       resetEditor,
       history,
       saveCurrentSession,

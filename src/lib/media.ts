@@ -27,7 +27,22 @@ export function probeDuration(file: File): Promise<number | null> {
 
     video.onloadedmetadata = () => {
       const d = video.duration;
-      finish(Number.isFinite(d) && d > 0 ? d : null);
+      if (Number.isFinite(d) && d > 0) {
+        finish(d);
+        return;
+      }
+      // Some containers (WebM from MediaRecorder, certain streamed files) report
+      // Infinity/NaN until the playhead is seeked to the end. Force it, then read.
+      const onSeeked = () => {
+        const real = video.duration;
+        finish(Number.isFinite(real) && real > 0 ? real : null);
+      };
+      video.addEventListener('seeked', onSeeked, { once: true });
+      try {
+        video.currentTime = 1e7;
+      } catch {
+        finish(null);
+      }
     };
     video.onerror = () => finish(null);
     // Fallback timeout so we never hang the UI.

@@ -3,7 +3,7 @@
 // Only metadata is stored (source name/size/duration, timestamp segments,
 // output name, timestamps). The actual video files are never persisted, so a
 // reopened session may need the user to reselect its source file.
-import type { ClipSession, Segment, SourceMeta } from './types';
+import type { ClipSession, Group, Segment, SourceMeta } from './types';
 import { makeId } from './id';
 
 const STORAGE_KEY = 'clip-ugc:history:v1';
@@ -16,7 +16,10 @@ export function loadHistory(): ClipSession[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isValidSession).sort((a, b) => b.updatedAt - a.updatedAt);
+    return parsed
+      .filter(isValidSession)
+      .map(normalizeSession)
+      .sort((a, b) => b.updatedAt - a.updatedAt);
   } catch {
     return [];
   }
@@ -65,6 +68,7 @@ export function buildSession(params: {
   title: string;
   source: SourceMeta;
   segments: Segment[];
+  groups: Group[];
   outputName: string;
   createdAt?: number;
 }): ClipSession {
@@ -75,8 +79,27 @@ export function buildSession(params: {
     createdAt: params.createdAt ?? now,
     updatedAt: now,
     source: params.source,
-    segments: params.segments.map((s) => ({ start: s.start, end: s.end })),
+    segments: params.segments.map((s) => ({
+      start: s.start,
+      end: s.end,
+      groupId: s.groupId ?? null,
+    })),
+    groups: params.groups.map((g) => ({ id: g.id, name: g.name, color: g.color })),
     outputName: params.outputName,
+  };
+}
+
+/** Backfill fields added after the first schema version. */
+function normalizeSession(session: ClipSession): ClipSession {
+  const groups = Array.isArray(session.groups) ? session.groups : [];
+  return {
+    ...session,
+    groups,
+    segments: session.segments.map((s) => ({
+      start: s.start,
+      end: s.end,
+      groupId: (s as { groupId?: string | null }).groupId ?? null,
+    })),
   };
 }
 

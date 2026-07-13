@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '@/context/AppContext';
-import { renderClips, revokeRenderResult } from '@/lib/ffmpeg';
+import { renderProject, revokeRenderResult } from '@/lib/ffmpeg';
 import type { RenderProgress, RenderResult } from '@/lib/types';
 import { formatBytes, formatDuration } from '@/lib/time';
+import { computeBuckets, isValidSegment } from '@/lib/groups';
 
 export function RenderPanel() {
   const { editor, saveCurrentSession } = useApp();
@@ -14,7 +15,6 @@ export function RenderPanel() {
   const [error, setError] = useState<string | null>(null);
   const resultRef = useRef<RenderResult | null>(null);
 
-  // Revoke object URLs from a previous result on unmount / replacement.
   useEffect(() => {
     resultRef.current = result;
   }, [result]);
@@ -22,7 +22,10 @@ export function RenderPanel() {
     return () => revokeRenderResult(resultRef.current);
   }, []);
 
-  const validSegments = editor.segments.filter((s) => s.end > s.start);
+  const validSegments = editor.segments.filter(isValidSegment);
+  const buckets = computeBuckets(editor.segments, editor.groups).filter((b) =>
+    b.segments.some(isValidSegment)
+  );
   const canRender = !!editor.file && validSegments.length > 0 && !rendering;
 
   const run = useCallback(async () => {
@@ -30,30 +33,25 @@ export function RenderPanel() {
     setError(null);
     setRendering(true);
     setProgress({ ratio: 0, stage: 'Starting…' });
-
-    // Clear old result and free its memory.
     revokeRenderResult(resultRef.current);
     setResult(null);
 
     try {
-      const res = await renderClips(editor.file, editor.segments, {
+      const res = await renderProject(editor.file, editor.segments, editor.groups, {
         outputBaseName: editor.title || editor.file.name,
         onProgress: (p) => setProgress(p),
       });
       setResult(res);
-      // Persist this session to history on a successful render.
-      saveCurrentSession(res.output.filename);
+      saveCurrentSession(res.final.filename);
     } catch (err) {
       console.error(err);
       setError(
-        err instanceof Error
-          ? err.message
-          : 'Something went wrong while processing the video.'
+        err instanceof Error ? err.message : 'Something went wrong while processing the video.'
       );
     } finally {
       setRendering(false);
     }
-  }, [editor.file, editor.segments, editor.title, saveCurrentSession]);
+  }, [editor.file, editor.segments, editor.groups, editor.title, saveCurrentSession]);
 
   return (
     <div className="card">
@@ -61,7 +59,9 @@ export function RenderPanel() {
         <div>
           <h2 className="text-sm font-semibold">Splice</h2>
           <p className="mt-0.5 text-xs text-white/50">
-            Cuts each segment and stitches them into one video, in your browser.
+            {buckets.length > 1
+              ? `Splices ${buckets.length} groups and stitches them into one final video.`
+              : 'Cuts each segment and stitches them into one video, in your browser.'}
           </p>
         </div>
         <button className="btn-primary" onClick={run} disabled={!canRender}>
@@ -106,30 +106,62 @@ export function RenderPanel() {
 }
 
 function Results({ result }: { result: RenderResult }) {
+  const hasGroups = result.buckets.length > 1;
   return (
-    <div className="mt-6 space-y-5 border-t border-white/10 pt-5">
+    <div className="mt-6 space-y-6 border-t border-white/10 pt-5">
       <div>
         <div className="mb-2 flex items-center gap-2">
           <span className="text-green-400">✓</span>
-          <h3 className="text-sm font-semibold">Spliced output</h3>
+          <h3 className="text-sm font-semibold">Final spliced video</h3>
           <span className="text-xs text-white/40">
-            {formatDuration(result.output.duration)} · {formatBytes(result.output.blob.size)}
+            {formatDuration(result.final.duration)} · {formatBytes(result.final.blob.size)}
           </span>
         </div>
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <video
-          src={result.output.url}
-          controls
-          className="w-full rounded-lg bg-black"
-        />
-        <a
-          href={result.output.url}
-          download={result.output.filename}
-          className="btn-primary mt-3"
-        >
-          ⬇ Download spliced video
+        <video src={result.final.url} controls className="w-full rounded-lg bg-black" />
+        <a href={result.final.url} download={result.final.filename} className="btn-primary mt-3">
+          ⬇ Download final video
         </a>
       </div>
+
+      {hasGroups && (
+        <div>
+          <h3 className="mb-2 text-sm font-semibold">
+            Group splices{' '}
+            <span className="text-xs font-normal text-white/40">
+              (each group stitched on its own)
+            </span>
+          </h3>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {result.buckets.map((bucket) => (
+              <div
+                key={bucket.groupId ?? '__ungrouped__'}
+                className="rounded-lg border border-white/10 bg-white/[0.02] p-3"
+              >
+                <div className="mb-2 flex items-center gap-2">
+                  <span
+                    className="h-3 w-3 rounded-full"
+                    style={{ background: bucket.color ?? '#64748b' }}
+                  />
+                  <span className="text-sm font-medium">{bucket.name}</span>
+                  <span className="text-xs text-white/40">
+                    {bucket.segmentCount} · {formatDuration(bucket.duration)}
+                  </span>
+                </div>
+                {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                <video src={bucket.url} controls className="w-full rounded bg-black" />
+                <a
+                  href={bucket.url}
+                  download={bucket.filename}
+                  className="btn-secondary mt-2 w-full text-xs"
+                >
+                  ⬇ Download {bucket.name} splice
+                </a>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {result.clips.length > 1 && (
         <div>
@@ -145,16 +177,14 @@ function Results({ result }: { result: RenderResult }) {
               >
                 <div className="min-w-0 text-xs">
                   <div className="truncate font-medium">Clip {clip.index + 1}</div>
-                  <div className="text-white/40">
-                    {formatDuration(clip.end - clip.start)} · {formatBytes(clip.blob.size)}
-                  </div>
+                  <div className="text-white/40">{formatDuration(clip.end - clip.start)}</div>
                 </div>
                 <a
                   href={clip.url}
                   download={clip.filename}
                   className="btn-secondary shrink-0 px-3 py-1.5 text-xs"
                 >
-                  ⬇ Download
+                  ⬇
                 </a>
               </li>
             ))}

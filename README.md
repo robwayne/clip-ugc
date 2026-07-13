@@ -13,8 +13,16 @@ machine, and no server-side storage is required.
 - **Cut & splice** — enter ranges like `00:00 – 00:10`, `00:15 – 00:19`,
   `00:38 – 00:39`, `00:55 – 01:00`; the app extracts each range and concatenates
   them into one video.
+- **Visual timeline** — a draggable track under the player: drag empty space to
+  create a segment, drag a bar to move it, drag its edges to trim, and click to
+  seek. Overlapping segments stack into lanes and are color-coded by group.
+- **Groups** — organize segments into named, colored groups. Each group splices
+  on its own (individually downloadable), and all groups are stitched together in
+  order into the final video. Segments can be duplicated (independent copies), so
+  the same clip can appear multiple times within a group. With no groups, all
+  segments splice together exactly as before.
 - **Optional per-clip downloads** — every segment is also produced as its own
-  file, so you can grab individual clips as well as the stitched result.
+  file, so you can grab individual clips as well as the group and final splices.
 - **Works with standard formats** — MP4, MKV, MOV, WebM, AVI and more. Every clip
   is normalized to H.264/AAC MP4 so the pieces splice together cleanly regardless
   of the source container.
@@ -35,8 +43,11 @@ For each session the pipeline:
 1. Loads the uploaded file into ffmpeg's in-memory filesystem.
 2. Re-encodes each `[start, end]` range into a normalized MP4 clip (frame-accurate
    cuts, consistent codec parameters). These are the optional per-clip downloads.
-3. Concatenates the normalized clips with the ffmpeg concat demuxer using stream
-   copy (fast, lossless) into the final spliced output.
+3. For each bucket — each group in order, then a trailing "Ungrouped" bucket —
+   concatenates its clips with the ffmpeg concat demuxer using stream copy
+   (fast, lossless) into that group's splice.
+4. Concatenates every clip, in bucket order, into the single final output. With
+   only one bucket this is just the flat splice of all segments.
 
 ## Getting started
 

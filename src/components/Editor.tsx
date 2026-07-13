@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { SourcePicker } from './SourcePicker';
 import { Preview } from './Preview';
+import { Timeline } from './Timeline';
+import { GroupsBar } from './GroupsBar';
 import { SegmentList } from './SegmentList';
 import { RenderPanel } from './RenderPanel';
 
@@ -81,6 +83,12 @@ export function Editor() {
       {objectUrl && (
         <Preview ref={videoRef} url={objectUrl} currentTime={currentTime} duration={duration} />
       )}
+
+      {objectUrl && duration != null && duration > 0 && (
+        <Timeline duration={duration} currentTime={currentTime} onSeek={seekTo} />
+      )}
+
+      {editor.source && <GroupsBar />}
 
       {editor.source && (
         <SegmentList

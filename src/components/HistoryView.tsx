@@ -73,8 +73,11 @@ function HistoryCard({
           </p>
           <p className="mt-0.5 text-xs text-white/40">
             {session.segments.length} segment
-            {session.segments.length === 1 ? '' : 's'} · output{' '}
-            {formatDuration(totalOutput)} · saved {date.toLocaleString()}
+            {session.segments.length === 1 ? '' : 's'}
+            {session.groups.length > 0 && (
+              <> · {session.groups.length} group{session.groups.length === 1 ? '' : 's'}</>
+            )}{' '}
+            · output {formatDuration(totalOutput)} · saved {date.toLocaleString()}
           </p>
         </div>
         <div className="flex shrink-0 gap-2">
@@ -89,14 +92,22 @@ function HistoryCard({
 
       {session.segments.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-1.5">
-          {session.segments.map((s, i) => (
-            <span
-              key={i}
-              className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-0.5 font-mono text-[11px] text-white/60"
-            >
-              {formatTimestamp(s.start)} – {formatTimestamp(s.end)}
-            </span>
-          ))}
+          {session.segments.map((s, i) => {
+            const color = s.groupId
+              ? session.groups.find((g) => g.id === s.groupId)?.color
+              : undefined;
+            return (
+              <span
+                key={i}
+                className="flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.03] px-2 py-0.5 font-mono text-[11px] text-white/60"
+              >
+                {color && (
+                  <span className="h-2 w-2 rounded-full" style={{ background: color }} />
+                )}
+                {formatTimestamp(s.start)} – {formatTimestamp(s.end)}
+              </span>
+            );
+          })}
         </div>
       )}
     </div>

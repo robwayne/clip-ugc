@@ -1,18 +1,26 @@
 // Client-side video processing with ffmpeg.wasm.
 //
-// Pipeline for a session:
+// Pipeline for a project:
 //   1. Write the uploaded source into the in-memory FS.
-//   2. For each requested [start, end] range, re-encode a normalized clip
-//      (H.264 / AAC / mp4). Re-encoding gives frame-accurate cut boundaries and
-//      makes every clip share the same codec parameters.
-//   3. Concatenate all normalized clips with the concat demuxer using stream
-//      copy (fast, lossless) into the final stitched output.
+//   2. For each segment, re-encode a normalized clip (H.264 / AAC / mp4).
+//      Re-encoding gives frame-accurate cut boundaries and makes every clip
+//      share identical codec parameters.
+//   3. For each bucket (group, plus a trailing ungrouped bucket) concatenate its
+//      clips with the concat demuxer using stream copy into a per-bucket splice.
+//   4. Concatenate every clip, in bucket order, into the single final output.
 //
-// Because each clip is produced as its own file, the individual clips are also
-// available for optional download — no extra work needed.
+// Because each segment is produced as its own file, individual clips are also
+// available for optional download, and each bucket produces its own splice.
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
-import type { RenderProgress, RenderResult, Segment } from './types';
+import type {
+  Group,
+  RenderProgress,
+  RenderResult,
+  RenderedBucket,
+  Segment,
+} from './types';
+import { computeBuckets, isValidSegment } from './groups';
 
 let ffmpegSingleton: FFmpeg | null = null;
 let loadPromise: Promise<FFmpeg> | null = null;
@@ -44,7 +52,6 @@ export async function getFFmpeg(onLog?: (msg: string) => void): Promise<FFmpeg> 
   try {
     return await loadPromise;
   } catch (err) {
-    // Reset so a later attempt can retry loading.
     loadPromise = null;
     throw err;
   }
@@ -63,26 +70,25 @@ function extensionFromName(name: string): string {
 }
 
 /**
- * Run the full clip + splice pipeline.
- *
- * @param file      The source video file.
- * @param segments  Ordered list of [start, end] ranges (seconds).
- * @param opts      Progress + naming options.
+ * Run the full clip + splice pipeline for a project with optional groups.
  */
-export async function renderClips(
+export async function renderProject(
   file: File,
   segments: Segment[],
+  groups: Group[],
   opts: {
     onProgress?: (progress: RenderProgress) => void;
     onLog?: (msg: string) => void;
     outputBaseName?: string;
   } = {}
 ): Promise<RenderResult> {
-  const valid = segments
-    .filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
-    .map((s) => ({ ...s }));
+  // Build render order from buckets, keeping only valid segments.
+  const buckets = computeBuckets(segments, groups)
+    .map((b) => ({ ...b, segments: b.segments.filter(isValidSegment) }))
+    .filter((b) => b.segments.length > 0);
 
-  if (valid.length === 0) {
+  const orderedSegments: Segment[] = buckets.flatMap((b) => b.segments);
+  if (orderedSegments.length === 0) {
     throw new Error('Add at least one valid segment (end must be after start).');
   }
 
@@ -94,45 +100,72 @@ export async function renderClips(
   const inputName = `input.${inputExt}`;
   const base = sanitizeBaseName(opts.outputBaseName ?? file.name);
 
-  // Track files we create so we can always clean them up.
   const scratchFiles = new Set<string>([inputName]);
 
   report(0.02, 'Loading source video…');
   await ffmpeg.writeFile(inputName, await fetchFile(file));
 
-  // ffmpeg's progress events are per-command; scale them into an overall bar.
-  // We reserve ~85% of the bar for per-clip extraction and ~15% for concat.
-  const clipShare = 0.85;
-  const perClip = clipShare / valid.length;
+  // Reserve ~80% of the bar for clip extraction, the rest for concat steps.
+  const clipShare = 0.8;
+  const perClip = clipShare / orderedSegments.length;
   let clipBaseRatio = 0.05;
-  let currentClipIndex = 0;
+  let currentClipNumber = 0;
 
   const progressHandler = ({ progress }: { progress: number }) => {
     const clamped = Math.max(0, Math.min(1, progress));
-    report(clipBaseRatio + clamped * perClip, `Cutting clip ${currentClipIndex + 1} of ${valid.length}…`);
+    report(
+      clipBaseRatio + clamped * perClip,
+      `Cutting clip ${currentClipNumber} of ${orderedSegments.length}…`
+    );
   };
   ffmpeg.on('progress', progressHandler);
 
-  const clipFilenames: string[] = [];
+  // Map each ordered segment to its produced clip filename + blob.
+  const clipFileFor = new Map<Segment, string>();
   const result: RenderResult = {
     clips: [],
-    output: { blob: new Blob(), url: '', filename: '', duration: 0 },
+    buckets: [],
+    final: { blob: new Blob(), url: '', filename: '', duration: 0 },
+  };
+
+  const concat = async (inputs: string[], outName: string): Promise<void> => {
+    if (inputs.length === 1) {
+      // Copy the single input to the output name so callers can read it back.
+      const data = await ffmpeg.readFile(inputs[0]);
+      await ffmpeg.writeFile(outName, data);
+      return;
+    }
+    const listName = `list_${outName}.txt`;
+    scratchFiles.add(listName);
+    const body = inputs.map((n) => `file '${n}'`).join('\n');
+    await ffmpeg.writeFile(listName, new TextEncoder().encode(body));
+    await ffmpeg.exec([
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      listName,
+      '-c',
+      'copy',
+      '-movflags',
+      '+faststart',
+      outName,
+    ]);
   };
 
   try {
-    for (let i = 0; i < valid.length; i++) {
-      currentClipIndex = i;
+    // 1. Extract every segment clip.
+    for (let i = 0; i < orderedSegments.length; i++) {
+      const seg = orderedSegments[i];
+      currentClipNumber = i + 1;
       clipBaseRatio = 0.05 + i * perClip;
-      const seg = valid[i];
       const duration = seg.end - seg.start;
       const clipName = `clip_${String(i).padStart(3, '0')}.mp4`;
       scratchFiles.add(clipName);
 
-      report(clipBaseRatio, `Cutting clip ${i + 1} of ${valid.length}…`);
+      report(clipBaseRatio, `Cutting clip ${i + 1} of ${orderedSegments.length}…`);
 
-      // Input seeking (-ss before -i) with re-encoding is fast and accurate.
-      // -t is the clip duration. We normalize to H.264/AAC so every clip shares
-      // identical parameters, which lets the concat step use stream copy.
       await ffmpeg.exec([
         '-ss',
         seg.start.toFixed(3),
@@ -163,62 +196,74 @@ export async function renderClips(
         clipName,
       ]);
 
+      clipFileFor.set(seg, clipName);
       const clipData = await ffmpeg.readFile(clipName);
       const clipBlob = new Blob([toArrayBuffer(clipData)], { type: 'video/mp4' });
       result.clips.push({
         index: i,
         start: seg.start,
         end: seg.end,
+        groupId: seg.groupId,
         blob: clipBlob,
         url: URL.createObjectURL(clipBlob),
         filename: `${base}_clip${i + 1}.mp4`,
       });
-      clipFilenames.push(clipName);
     }
 
-    // If there is only one clip, the "stitched" output is just that clip.
-    let outputName = `${base}_spliced.mp4`;
-    let totalDuration = valid.reduce((sum, s) => sum + (s.end - s.start), 0);
+    const multipleBuckets = buckets.length > 1;
 
-    if (clipFilenames.length === 1) {
-      report(0.95, 'Finalizing output…');
-      const single = result.clips[0].blob;
-      result.output = {
-        blob: single,
-        url: URL.createObjectURL(single),
-        filename: outputName,
+    // 2. Build a splice per bucket.
+    ffmpeg.off('progress', progressHandler); // per-clip weighting no longer applies
+    for (let b = 0; b < buckets.length; b++) {
+      const bucket = buckets[b];
+      report(
+        0.85 + (b / buckets.length) * 0.1,
+        `Splicing ${bucket.name}…`
+      );
+      const inputs = bucket.segments.map((s) => clipFileFor.get(s)!);
+      const outName = `bucket_${b}.mp4`;
+      scratchFiles.add(outName);
+      await concat(inputs, outName);
+
+      const data = await ffmpeg.readFile(outName);
+      const blob = new Blob([toArrayBuffer(data)], { type: 'video/mp4' });
+      const rendered: RenderedBucket = {
+        groupId: bucket.groupId,
+        name: bucket.name,
+        color: bucket.color,
+        segmentCount: bucket.segments.length,
+        blob,
+        url: URL.createObjectURL(blob),
+        filename: `${base}_${sanitizeBaseName(bucket.name)}.mp4`,
+        duration: bucket.segments.reduce((sum, s) => sum + (s.end - s.start), 0),
+      };
+      result.buckets.push(rendered);
+    }
+
+    // 3. Final output = all clips in bucket order. Reuse the single bucket's
+    //    splice when there is only one bucket.
+    report(0.96, 'Finalizing output…');
+    const totalDuration = orderedSegments.reduce((sum, s) => sum + (s.end - s.start), 0);
+
+    if (!multipleBuckets) {
+      const only = result.buckets[0];
+      result.final = {
+        blob: only.blob,
+        url: URL.createObjectURL(only.blob),
+        filename: `${base}_spliced.mp4`,
         duration: totalDuration,
       };
     } else {
-      report(0.9, 'Stitching clips together…');
-      // Build the concat list file.
-      const listName = 'concat_list.txt';
-      scratchFiles.add(listName);
-      const listBody = clipFilenames.map((name) => `file '${name}'`).join('\n');
-      await ffmpeg.writeFile(listName, new TextEncoder().encode(listBody));
-
-      const outName = 'output.mp4';
-      scratchFiles.add(outName);
-      await ffmpeg.exec([
-        '-f',
-        'concat',
-        '-safe',
-        '0',
-        '-i',
-        listName,
-        '-c',
-        'copy',
-        '-movflags',
-        '+faststart',
-        outName,
-      ]);
-
-      const outData = await ffmpeg.readFile(outName);
-      const outBlob = new Blob([toArrayBuffer(outData)], { type: 'video/mp4' });
-      result.output = {
-        blob: outBlob,
-        url: URL.createObjectURL(outBlob),
-        filename: outputName,
+      const finalName = 'final.mp4';
+      scratchFiles.add(finalName);
+      const inputs = orderedSegments.map((s) => clipFileFor.get(s)!);
+      await concat(inputs, finalName);
+      const data = await ffmpeg.readFile(finalName);
+      const blob = new Blob([toArrayBuffer(data)], { type: 'video/mp4' });
+      result.final = {
+        blob,
+        url: URL.createObjectURL(blob),
+        filename: `${base}_spliced.mp4`,
         duration: totalDuration,
       };
     }
@@ -227,7 +272,6 @@ export async function renderClips(
     return result;
   } finally {
     ffmpeg.off('progress', progressHandler);
-    // Best-effort cleanup of the in-memory FS.
     for (const name of scratchFiles) {
       try {
         await ffmpeg.deleteFile(name);
@@ -243,15 +287,13 @@ function toArrayBuffer(data: Uint8Array | string): ArrayBuffer {
   if (typeof data === 'string') {
     return new TextEncoder().encode(data).buffer;
   }
-  // Copy into a standalone ArrayBuffer to avoid referencing wasm memory.
   return data.slice().buffer;
 }
 
 /** Release object URLs held by a render result. */
 export function revokeRenderResult(result: RenderResult | null): void {
   if (!result) return;
-  for (const clip of result.clips) {
-    URL.revokeObjectURL(clip.url);
-  }
-  if (result.output.url) URL.revokeObjectURL(result.output.url);
+  for (const clip of result.clips) URL.revokeObjectURL(clip.url);
+  for (const bucket of result.buckets) URL.revokeObjectURL(bucket.url);
+  if (result.final.url) URL.revokeObjectURL(result.final.url);
 }

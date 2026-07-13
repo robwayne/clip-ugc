@@ -1,8 +1,8 @@
 'use client';
 
 import { useApp } from '@/context/AppContext';
-import type { Segment } from '@/lib/types';
 import { formatDuration, formatTimestamp, parseTimestamp } from '@/lib/time';
+import { computeBuckets, totalOutputDuration } from '@/lib/groups';
 import { SegmentRow } from './SegmentRow';
 
 interface SegmentListProps {
@@ -18,27 +18,29 @@ export function SegmentList({
   seekTo,
   previewRange,
 }: SegmentListProps) {
-  const { editor, addSegment, updateSegment, removeSegment } = useApp();
+  const {
+    editor,
+    addSegment,
+    updateSegment,
+    removeSegment,
+    duplicateSegment,
+    moveSegmentWithinGroup,
+    setSelectedSegment,
+  } = useApp();
   const segments = editor.segments;
+  const buckets = computeBuckets(segments, editor.groups);
 
-  const totalOutput = segments.reduce(
-    (sum, s) => (s.end > s.start ? sum + (s.end - s.start) : sum),
-    0
-  );
-
+  const totalOutput = totalOutputDuration(segments);
   const invalidCount = segments.filter(
-    (s) =>
-      !(s.end > s.start) ||
-      (duration != null && (s.start < 0 || s.end > duration + 0.5))
+    (s) => !(s.end > s.start) || (duration != null && (s.start < 0 || s.end > duration + 0.5))
   ).length;
 
   const handleBulkAdd = () => {
     const raw = prompt(
-      'Paste timestamp ranges, one per line, e.g.\n00:00 - 00:10\n0:15-0:19\n00:38 - 00:39'
+      'Paste timestamp ranges, one per line, e.g.\n00:00 - 00:10\n0:15-0:19\n00:38 - 00:39\n\nThese are added to the active group.'
     );
     if (!raw) return;
-    const lines = raw.split(/\n+/);
-    for (const line of lines) {
+    for (const line of raw.split(/\n+/)) {
       const match = line.split(/\s*[-–—to]+\s*/i).filter(Boolean);
       if (match.length < 2) continue;
       const start = parseTimestamp(match[0]);
@@ -48,16 +50,15 @@ export function SegmentList({
     }
   };
 
+  // A per-segment display index, numbered within each bucket.
   return (
     <div className="card">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-sm font-semibold">Timestamp segments</h2>
+          <h2 className="text-sm font-semibold">Segments</h2>
           <p className="mt-0.5 text-xs text-white/50">
-            {segments.length} clip{segments.length === 1 ? '' : 's'} · output length{' '}
-            <span className="font-mono text-white/80">
-              {formatTimestamp(totalOutput)}
-            </span>{' '}
+            {segments.length} clip{segments.length === 1 ? '' : 's'} · total output{' '}
+            <span className="font-mono text-white/80">{formatTimestamp(totalOutput)}</span>{' '}
             ({formatDuration(totalOutput)})
           </p>
         </div>
@@ -73,29 +74,53 @@ export function SegmentList({
 
       {segments.length === 0 ? (
         <div className="rounded-lg border border-dashed border-white/15 px-4 py-8 text-center text-sm text-white/40">
-          No segments yet. Add one, or use{' '}
+          No segments yet. Drag on the timeline above, click{' '}
+          <span className="text-white/70">+ Add segment</span>, or{' '}
           <button className="underline hover:text-white" onClick={handleBulkAdd}>
             paste ranges
-          </button>{' '}
-          to enter several at once.
+          </button>
+          .
         </div>
       ) : (
-        <ul className="space-y-2">
-          {segments.map((segment: Segment, index: number) => (
-            <SegmentRow
-              key={segment.id}
-              index={index}
-              segment={segment}
-              duration={duration}
-              onUpdate={(patch) => updateSegment(segment.id, patch)}
-              onRemove={() => removeSegment(segment.id)}
-              onSetStart={() => updateSegment(segment.id, { start: round(getCurrentTime()) })}
-              onSetEnd={() => updateSegment(segment.id, { end: round(getCurrentTime()) })}
-              onSeekStart={() => seekTo(segment.start)}
-              onPreview={() => previewRange(segment.start, segment.end)}
-            />
+        <div className="space-y-5">
+          {buckets.map((bucket) => (
+            <section key={bucket.groupId ?? '__ungrouped__'}>
+              <div className="mb-2 flex items-center gap-2">
+                <span
+                  className="h-3 w-3 rounded-full"
+                  style={{ background: bucket.color ?? '#64748b' }}
+                />
+                <h3 className="text-sm font-medium">{bucket.name}</h3>
+                <span className="text-xs text-white/40">
+                  {bucket.segments.length} segment{bucket.segments.length === 1 ? '' : 's'} ·{' '}
+                  {formatDuration(totalOutputDuration(bucket.segments))}
+                </span>
+              </div>
+              <ul className="space-y-2">
+                {bucket.segments.map((segment, i) => (
+                  <SegmentRow
+                    key={segment.id}
+                    label={String(i + 1)}
+                    segment={segment}
+                    duration={duration}
+                    groups={editor.groups}
+                    selected={editor.selectedSegmentId === segment.id}
+                    onSelect={() => setSelectedSegment(segment.id)}
+                    onUpdate={(patch) => updateSegment(segment.id, patch)}
+                    onRemove={() => removeSegment(segment.id)}
+                    onDuplicate={() => duplicateSegment(segment.id)}
+                    onMove={(dir) => moveSegmentWithinGroup(segment.id, dir)}
+                    onChangeGroup={(groupId) => updateSegment(segment.id, { groupId })}
+                    onSetStart={() => updateSegment(segment.id, { start: round(getCurrentTime()) })}
+                    onSetEnd={() => updateSegment(segment.id, { end: round(getCurrentTime()) })}
+                    onSeekStart={() => seekTo(segment.start)}
+                    onPreview={() => previewRange(segment.start, segment.end)}
+                  />
+                ))}
+              </ul>
+            </section>
           ))}
-        </ul>
+        </div>
       )}
 
       {invalidCount > 0 && (
