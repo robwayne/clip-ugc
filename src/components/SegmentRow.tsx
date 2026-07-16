@@ -11,6 +11,12 @@ interface SegmentRowProps {
   groups: Group[];
   selected: boolean;
   open: boolean;
+  dragging: boolean;
+  dragOver: boolean;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  onDragOverRow: (e: React.DragEvent) => void;
+  onDropRow: (e: React.DragEvent) => void;
   onSelect: () => void;
   onUpdate: (patch: Partial<Segment>) => void;
   onRemove: () => void;
@@ -30,6 +36,12 @@ export function SegmentRow({
   groups,
   selected,
   open,
+  dragging,
+  dragOver,
+  onDragStart,
+  onDragEnd,
+  onDragOverRow,
+  onDropRow,
   onSelect,
   onUpdate,
   onRemove,
@@ -48,7 +60,11 @@ export function SegmentRow({
   return (
     <li
       onClick={onSelect}
+      onDragOver={onDragOverRow}
+      onDrop={onDropRow}
       className={`rounded-lg border p-3 transition-colors ${
+        dragging ? 'opacity-40' : ''
+      } ${dragOver ? 'border-t-2 border-t-brand-400' : ''} ${
         open
           ? 'border-red-400/60 bg-red-500/[0.06]'
           : selected
@@ -59,6 +75,17 @@ export function SegmentRow({
       }`}
     >
       <div className="flex flex-wrap items-end gap-3">
+        <span
+          draggable
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
+          onClick={(e) => e.stopPropagation()}
+          className="mb-2 flex h-6 shrink-0 cursor-grab items-center px-0.5 text-white/30 hover:text-white active:cursor-grabbing"
+          title="Drag to reorder within this group"
+          aria-label="Drag to reorder"
+        >
+          ⠿
+        </span>
         <span
           className={`mb-2 flex h-6 min-w-[1.5rem] shrink-0 items-center justify-center rounded-full px-1.5 text-xs font-semibold ${
             open ? 'animate-pulse bg-red-500/40 text-red-100' : 'bg-brand-600/30 text-brand-100'

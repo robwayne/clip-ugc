@@ -1,8 +1,9 @@
 'use client';
 
+import { useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { formatDuration, formatTimestamp, parseTimestamp } from '@/lib/time';
-import { computeBuckets, totalOutputDuration } from '@/lib/groups';
+import { computeBuckets, isValidSegment, totalOutputDuration } from '@/lib/groups';
 import { SegmentRow } from './SegmentRow';
 
 interface SegmentListProps {
@@ -10,6 +11,9 @@ interface SegmentListProps {
   getCurrentTime: () => number;
   seekTo: (seconds: number) => void;
   previewRange: (start: number, end: number) => void;
+  playSegments: (ranges: Array<{ start: number; end: number }>, key: string) => void;
+  stopPlayback: () => void;
+  playingKey: string | null;
 }
 
 export function SegmentList({
@@ -17,6 +21,9 @@ export function SegmentList({
   getCurrentTime,
   seekTo,
   previewRange,
+  playSegments,
+  stopPlayback,
+  playingKey,
 }: SegmentListProps) {
   const {
     editor,
@@ -25,15 +32,25 @@ export function SegmentList({
     removeSegment,
     duplicateSegment,
     moveSegmentWithinGroup,
+    moveSegmentBefore,
     setSelectedSegment,
   } = useApp();
   const segments = editor.segments;
   const buckets = computeBuckets(segments, editor.groups);
 
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const draggingSeg = draggingId ? segments.find((s) => s.id === draggingId) : undefined;
+
   const totalOutput = totalOutputDuration(segments);
   const invalidCount = segments.filter(
     (s) => !(s.end > s.start) || (duration != null && (s.start < 0 || s.end > duration + 0.5))
   ).length;
+
+  const allRanges = buckets
+    .flatMap((b) => b.segments)
+    .filter(isValidSegment)
+    .map((s) => ({ start: s.start, end: s.end }));
 
   const handleBulkAdd = () => {
     const raw = prompt(
@@ -50,7 +67,11 @@ export function SegmentList({
     }
   };
 
-  // A per-segment display index, numbered within each bucket.
+  const clearDrag = () => {
+    setDraggingId(null);
+    setDragOverId(null);
+  };
+
   return (
     <div className="card">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
@@ -59,10 +80,24 @@ export function SegmentList({
           <p className="mt-0.5 text-xs text-white/50">
             {segments.length} clip{segments.length === 1 ? '' : 's'} · total output{' '}
             <span className="font-mono text-white/80">{formatTimestamp(totalOutput)}</span>{' '}
-            ({formatDuration(totalOutput)})
+            ({formatDuration(totalOutput)}) · drag the ⠿ handle to reorder within a group
           </p>
         </div>
         <div className="flex gap-2">
+          {allRanges.length > 0 &&
+            (playingKey === '__all__' ? (
+              <button className="btn-secondary" onClick={stopPlayback}>
+                ⏸ Stop
+              </button>
+            ) : (
+              <button
+                className="btn-secondary"
+                onClick={() => playSegments(allRanges, '__all__')}
+                title="Preview the whole final splice in order"
+              >
+                ▶ Play all
+              </button>
+            ))}
           <button className="btn-ghost" onClick={handleBulkAdd} title="Paste multiple ranges">
             Paste ranges
           </button>
@@ -83,44 +118,90 @@ export function SegmentList({
         </div>
       ) : (
         <div className="space-y-5">
-          {buckets.map((bucket) => (
-            <section key={bucket.groupId ?? '__ungrouped__'}>
-              <div className="mb-2 flex items-center gap-2">
-                <span
-                  className="h-3 w-3 rounded-full"
-                  style={{ background: bucket.color ?? '#64748b' }}
-                />
-                <h3 className="text-sm font-medium">{bucket.name}</h3>
-                <span className="text-xs text-white/40">
-                  {bucket.segments.length} segment{bucket.segments.length === 1 ? '' : 's'} ·{' '}
-                  {formatDuration(totalOutputDuration(bucket.segments))}
-                </span>
-              </div>
-              <ul className="space-y-2">
-                {bucket.segments.map((segment, i) => (
-                  <SegmentRow
-                    key={segment.id}
-                    label={String(i + 1)}
-                    segment={segment}
-                    duration={duration}
-                    groups={editor.groups}
-                    selected={editor.selectedSegmentId === segment.id}
-                    open={editor.openSegmentId === segment.id}
-                    onSelect={() => setSelectedSegment(segment.id)}
-                    onUpdate={(patch) => updateSegment(segment.id, patch)}
-                    onRemove={() => removeSegment(segment.id)}
-                    onDuplicate={() => duplicateSegment(segment.id)}
-                    onMove={(dir) => moveSegmentWithinGroup(segment.id, dir)}
-                    onChangeGroup={(groupId) => updateSegment(segment.id, { groupId })}
-                    onSetStart={() => updateSegment(segment.id, { start: round(getCurrentTime()) })}
-                    onSetEnd={() => updateSegment(segment.id, { end: round(getCurrentTime()) })}
-                    onSeekStart={() => seekTo(segment.start)}
-                    onPreview={() => previewRange(segment.start, segment.end)}
+          {buckets.map((bucket) => {
+            const bucketKey = `group:${bucket.groupId ?? '__ungrouped__'}`;
+            const bucketRanges = bucket.segments
+              .filter(isValidSegment)
+              .map((s) => ({ start: s.start, end: s.end }));
+            const isPlaying = playingKey === bucketKey;
+            const droppableGroup =
+              draggingSeg != null && draggingSeg.groupId === bucket.groupId;
+
+            return (
+              <section key={bucket.groupId ?? '__ungrouped__'}>
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <span
+                    className="h-3 w-3 rounded-full"
+                    style={{ background: bucket.color ?? '#64748b' }}
                   />
-                ))}
-              </ul>
-            </section>
-          ))}
+                  <h3 className="text-sm font-medium">{bucket.name}</h3>
+                  <span className="text-xs text-white/40">
+                    {bucket.segments.length} segment{bucket.segments.length === 1 ? '' : 's'} ·{' '}
+                    {formatDuration(totalOutputDuration(bucket.segments))}
+                  </span>
+                  {bucketRanges.length > 0 &&
+                    (isPlaying ? (
+                      <button
+                        className="btn-ghost px-2 py-1 text-xs text-red-300"
+                        onClick={stopPlayback}
+                      >
+                        ⏸ Stop
+                      </button>
+                    ) : (
+                      <button
+                        className="btn-ghost px-2 py-1 text-xs"
+                        onClick={() => playSegments(bucketRanges, bucketKey)}
+                        title="Play this group's clips back-to-back, in order"
+                      >
+                        ▶ Play group
+                      </button>
+                    ))}
+                </div>
+                <ul className="space-y-2">
+                  {bucket.segments.map((segment, i) => (
+                    <SegmentRow
+                      key={segment.id}
+                      label={String(i + 1)}
+                      segment={segment}
+                      duration={duration}
+                      groups={editor.groups}
+                      selected={editor.selectedSegmentId === segment.id}
+                      open={editor.openSegmentId === segment.id}
+                      dragging={draggingId === segment.id}
+                      dragOver={
+                        dragOverId === segment.id && draggingId !== segment.id && droppableGroup
+                      }
+                      onDragStart={() => setDraggingId(segment.id)}
+                      onDragEnd={clearDrag}
+                      onDragOverRow={(e) => {
+                        if (droppableGroup) {
+                          e.preventDefault();
+                          setDragOverId(segment.id);
+                        }
+                      }}
+                      onDropRow={(e) => {
+                        e.preventDefault();
+                        if (draggingId && droppableGroup) {
+                          moveSegmentBefore(draggingId, segment.id);
+                        }
+                        clearDrag();
+                      }}
+                      onSelect={() => setSelectedSegment(segment.id)}
+                      onUpdate={(patch) => updateSegment(segment.id, patch)}
+                      onRemove={() => removeSegment(segment.id)}
+                      onDuplicate={() => duplicateSegment(segment.id)}
+                      onMove={(dir) => moveSegmentWithinGroup(segment.id, dir)}
+                      onChangeGroup={(groupId) => updateSegment(segment.id, { groupId })}
+                      onSetStart={() => updateSegment(segment.id, { start: round(getCurrentTime()) })}
+                      onSetEnd={() => updateSegment(segment.id, { end: round(getCurrentTime()) })}
+                      onSeekStart={() => seekTo(segment.start)}
+                      onPreview={() => previewRange(segment.start, segment.end)}
+                    />
+                  ))}
+                </ul>
+              </section>
+            );
+          })}
         </div>
       )}
 

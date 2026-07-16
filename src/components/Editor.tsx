@@ -14,7 +14,12 @@ export function Editor() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
-  const stopAtRef = useRef<number | null>(null);
+  // Active back-to-back playback sequence (used for previewing a range or a
+  // whole group as if its clips were already concatenated).
+  const sequenceRef = useRef<{ ranges: Array<{ start: number; end: number }>; i: number } | null>(
+    null
+  );
+  const [playingKey, setPlayingKey] = useState<string | null>(null);
 
   // Manage the object URL for the loaded file.
   useEffect(() => {
@@ -28,20 +33,53 @@ export function Editor() {
     return () => URL.revokeObjectURL(url);
   }, [editor.file]);
 
-  // Track the playhead and enforce preview range stops.
+  // Keep the playhead readout in sync.
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    const onTime = () => {
-      setCurrentTime(video.currentTime);
-      if (stopAtRef.current != null && video.currentTime >= stopAtRef.current) {
-        video.pause();
-        stopAtRef.current = null;
-      }
+    const onTime = () => setCurrentTime(video.currentTime);
+    const onEnded = () => {
+      sequenceRef.current = null;
+      setPlayingKey(null);
     };
     video.addEventListener('timeupdate', onTime);
-    return () => video.removeEventListener('timeupdate', onTime);
+    video.addEventListener('ended', onEnded);
+    return () => {
+      video.removeEventListener('timeupdate', onTime);
+      video.removeEventListener('ended', onEnded);
+    };
   }, [objectUrl]);
+
+  // Drive sequential (back-to-back) playback with a requestAnimationFrame loop.
+  // Checking every frame (~16ms) rather than on `timeupdate` (~250ms) keeps clip
+  // boundaries tight, so a group plays as if its clips were already concatenated.
+  useEffect(() => {
+    if (!playingKey) return;
+    let raf = 0;
+    const tick = () => {
+      const video = videoRef.current;
+      const seq = sequenceRef.current;
+      if (video && seq) {
+        const range = seq.ranges[seq.i];
+        if (range && video.currentTime >= range.end - 0.01) {
+          const next = seq.i + 1;
+          if (next < seq.ranges.length) {
+            seq.i = next;
+            video.currentTime = seq.ranges[next].start;
+          } else {
+            video.pause();
+            sequenceRef.current = null;
+            setPlayingKey(null);
+            return;
+          }
+        }
+        setCurrentTime(video.currentTime);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playingKey]);
 
   const getCurrentTime = useCallback(() => videoRef.current?.currentTime ?? 0, []);
 
@@ -77,18 +115,40 @@ export function Editor() {
   const seekTo = useCallback((seconds: number) => {
     const video = videoRef.current;
     if (!video) return;
-    stopAtRef.current = null;
+    sequenceRef.current = null;
+    setPlayingKey(null);
     video.currentTime = Math.max(0, seconds);
     video.focus?.();
   }, []);
 
-  const previewRange = useCallback((start: number, end: number) => {
+  // Play an ordered list of ranges back-to-back, as if they were concatenated.
+  const playSegments = useCallback(
+    (ranges: Array<{ start: number; end: number }>, key: string) => {
+      const video = videoRef.current;
+      const valid = ranges.filter((r) => r.end > r.start);
+      if (!video || valid.length === 0) return;
+      sequenceRef.current = { ranges: valid, i: 0 };
+      setPlayingKey(key);
+      video.currentTime = Math.max(0, valid[0].start);
+      video.play().catch(() => {
+        // Autoplay blocked (e.g. no user gesture); leave the sequence armed so
+        // the user can start playback from the video controls.
+      });
+    },
+    []
+  );
+
+  const stopPlayback = useCallback(() => {
     const video = videoRef.current;
-    if (!video || !(end > start)) return;
-    video.currentTime = Math.max(0, start);
-    stopAtRef.current = end;
-    void video.play();
+    sequenceRef.current = null;
+    setPlayingKey(null);
+    video?.pause();
   }, []);
+
+  const previewRange = useCallback(
+    (start: number, end: number) => playSegments([{ start, end }], `preview:${start}:${end}`),
+    [playSegments]
+  );
 
   const duration = editor.source?.duration ?? null;
 
@@ -125,6 +185,9 @@ export function Editor() {
           getCurrentTime={getCurrentTime}
           seekTo={seekTo}
           previewRange={previewRange}
+          playSegments={playSegments}
+          stopPlayback={stopPlayback}
+          playingKey={playingKey}
         />
       )}
 

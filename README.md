@@ -26,6 +26,11 @@ machine, and no server-side storage is required.
   order into the final video. Segments can be duplicated (independent copies), so
   the same clip can appear multiple times within a group. With no groups, all
   segments splice together exactly as before.
+- **Reorder & preview** — drag the ⠿ handle (or use the ↑/↓ buttons) to reorder
+  clips within a group; that order drives both playback and the final splice.
+  Hit **Play group** to preview a group's clips back-to-back — as if already
+  concatenated — or **Play all** to preview the whole final splice, without
+  rendering anything.
 - **Optional per-clip downloads** — every segment is also produced as its own
   file, so you can grab individual clips as well as the group and final splices.
 - **Works with standard formats** — MP4, MKV, MOV, WebM, AVI and more. Every clip

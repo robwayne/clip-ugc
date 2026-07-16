@@ -58,6 +58,7 @@ interface AppContextValue {
   removeSegment: (id: string) => void;
   duplicateSegment: (id: string) => void;
   moveSegmentWithinGroup: (id: string, direction: -1 | 1) => void;
+  moveSegmentBefore: (dragId: string, targetId: string) => void;
   setSelectedSegment: (id: string | null) => void;
   /** S key: open a segment at `time`, or reset the open segment's start. */
   markStart: (time: number) => void;
@@ -267,6 +268,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  // Reorder by dropping `dragId` immediately before `targetId` in the global
+  // segment array. Used for drag-and-drop reordering within a group; because
+  // both belong to the same group, this only changes their relative order.
+  const moveSegmentBefore = useCallback((dragId: string, targetId: string) => {
+    if (dragId === targetId) return;
+    setEditor((e) => {
+      const segs = [...e.segments];
+      const from = segs.findIndex((s) => s.id === dragId);
+      if (from < 0) return e;
+      const [moved] = segs.splice(from, 1);
+      const to = segs.findIndex((s) => s.id === targetId);
+      if (to < 0) return e;
+      segs.splice(to, 0, moved);
+      return { ...e, segments: segs };
+    });
+  }, []);
+
   const setSelectedSegment = useCallback((id: string | null) => {
     setEditor((e) => ({ ...e, selectedSegmentId: id }));
   }, []);
@@ -376,6 +394,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       removeSegment,
       duplicateSegment,
       moveSegmentWithinGroup,
+      moveSegmentBefore,
       setSelectedSegment,
       markStart,
       markEnd,
@@ -401,6 +420,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       removeSegment,
       duplicateSegment,
       moveSegmentWithinGroup,
+      moveSegmentBefore,
       setSelectedSegment,
       markStart,
       markEnd,
