@@ -401,7 +401,12 @@ function GroupSpliceCard({
             </p>
           )}
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-          <video src={state.result.url} controls className="w-full rounded bg-black" />
+          <video
+            src={state.result.url}
+            controls
+            className="rounded bg-black object-contain"
+            style={{ width: 270, height: 180 }}
+          />
           <div className="mt-2 flex items-center gap-3">
             <a
               href={state.result.url}
