@@ -153,25 +153,40 @@ export function RenderPanel() {
     [patch]
   );
 
+  const fileBySource = useMemo(() => {
+    const m = new Map<string, File | null>();
+    for (const s of editor.sources) m.set(s.id, s.file);
+    return m;
+  }, [editor.sources]);
+
+  const baseName = editor.title || editor.sources[0]?.meta.name || 'video';
+
+  const itemsFor = useCallback(
+    (segs: Segment[]) =>
+      segs
+        .filter(isValidSegment)
+        .map((s) => ({ start: s.start, end: s.end, file: fileBySource.get(s.sourceId) ?? null }))
+        .filter((it): it is { start: number; end: number; file: File } => it.file != null),
+    [fileBySource]
+  );
+
+  const hasMissing = (segs: Segment[]) =>
+    segs.some((s) => !fileBySource.get(s.sourceId));
+
   const spliceGroup = useCallback(
     (groupId: string | null, name: string, segments: Segment[]) => {
-      if (!editor.file) return;
-      const file = editor.file;
+      const items = itemsFor(segments);
+      if (items.length === 0) return;
       runRender(bucketKey(groupId), signatureOf(segments), (signal, onProgress) =>
-        renderSplice(file, segments, {
-          outputBaseName: editor.title || file.name,
-          label: name,
-          signal,
-          onProgress,
-        })
+        renderSplice(items, { outputBaseName: baseName, label: name, signal, onProgress })
       );
     },
-    [editor.file, editor.title, runRender]
+    [itemsFor, baseName, runRender]
   );
 
   const spliceFinal = useCallback(() => {
-    if (!editor.file) return;
-    const file = editor.file;
+    const items = itemsFor(orderedAll);
+    if (items.length === 0) return;
     const signature = signatureOf(orderedAll) + '|final';
     runRender(FINAL_KEY, signature, (signal, onProgress) => {
       // Fast path: if every group already has a fresh splice, just stitch those.
@@ -183,29 +198,22 @@ export function RenderPanel() {
       if (allFresh) {
         const parts = buckets.map((b) => current[bucketKey(b.groupId)]!.result!);
         return concatRenderedVideos(parts, {
-          outputBaseName: editor.title || file.name,
+          outputBaseName: baseName,
           label: 'final',
           durationSeconds: totalDuration,
           signal,
           onProgress,
         });
       }
-      return renderSplice(file, orderedAll, {
-        outputBaseName: editor.title || file.name,
-        label: 'final',
-        signal,
-        onProgress,
-      });
+      return renderSplice(items, { outputBaseName: baseName, label: 'final', signal, onProgress });
     });
-  }, [editor.file, editor.title, buckets, orderedAll, totalDuration, runRender]);
+  }, [itemsFor, baseName, buckets, orderedAll, totalDuration, runRender]);
 
-  if (!editor.file) {
+  if (editor.sources.length === 0) {
     return (
       <div className="card">
         <h2 className="text-sm font-semibold">Splice &amp; download</h2>
-        <p className="mt-2 text-xs text-white/40">
-          Reselect the source video to splice and download your groups.
-        </p>
+        <p className="mt-2 text-xs text-white/40">Add a source video to splice.</p>
       </div>
     );
   }
@@ -247,6 +255,7 @@ export function RenderPanel() {
               duration={duration}
               state={state}
               stale={stale}
+              unavailable={hasMissing(bucket.segments)}
               isActive={activeKey === key}
               disabled={busy && activeKey !== key}
               onSplice={() => spliceGroup(bucket.groupId, bucket.name, bucket.segments)}
@@ -277,6 +286,7 @@ export function RenderPanel() {
                 states[FINAL_KEY]?.signature !== signatureOf(orderedAll) + '|final') ||
               false
             }
+            unavailable={hasMissing(orderedAll)}
             isActive={activeKey === FINAL_KEY}
             disabled={busy && activeKey !== FINAL_KEY}
             onSplice={spliceFinal}
@@ -296,6 +306,7 @@ function GroupSpliceCard({
   duration,
   state,
   stale,
+  unavailable,
   isActive,
   disabled,
   onSplice,
@@ -308,6 +319,7 @@ function GroupSpliceCard({
   duration: number;
   state: RenderState;
   stale: boolean;
+  unavailable: boolean;
   isActive: boolean;
   disabled: boolean;
   onSplice: () => void;
@@ -337,13 +349,20 @@ function GroupSpliceCard({
             <button
               className="btn-primary px-3 py-1.5 text-xs"
               onClick={onSplice}
-              disabled={disabled}
+              disabled={disabled || unavailable}
+              title={unavailable ? 'Reselect the missing source video(s) to splice' : undefined}
             >
               {state.phase === 'done' ? 'Re-splice' : primaryLabel}
             </button>
           )}
         </div>
       </div>
+
+      {unavailable && !rendering && (
+        <p className="mt-2 text-xs text-amber-300">
+          Some segments use a source whose file isn&apos;t loaded — reselect it above to splice.
+        </p>
+      )}
 
       {rendering && (
         <div className="mt-3">

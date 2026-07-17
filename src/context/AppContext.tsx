@@ -30,14 +30,22 @@ import {
 
 export type View = 'editor' | 'history';
 
+/** A source video open in the editor. The File is null when it needs reselecting. */
+export interface EditorSource {
+  id: string;
+  meta: SourceMeta;
+  file: File | null;
+}
+
 interface EditorState {
   /** Stable identity of this open tab (distinct from sessionId). */
   tabId: string;
   sessionId: string;
   createdAt: number;
   title: string;
-  file: File | null;
-  source: SourceMeta | null;
+  sources: EditorSource[];
+  /** Which source new segments default to (like the active group). */
+  activeSourceId: string | null;
   segments: Segment[];
   groups: Group[];
   activeGroupId: string | null;
@@ -58,15 +66,20 @@ export interface TabMeta {
 function serializeForSave(e: EditorState): string {
   return JSON.stringify({
     title: e.title.trim(),
-    source: e.source ? { name: e.source.name, size: e.source.size } : null,
-    segments: e.segments.map((s) => ({ start: s.start, end: s.end, groupId: s.groupId })),
+    sources: e.sources.map((s) => ({ id: s.id, name: s.meta.name, size: s.meta.size })),
+    segments: e.segments.map((s) => ({
+      start: s.start,
+      end: s.end,
+      groupId: s.groupId,
+      sourceId: s.sourceId,
+    })),
     groups: e.groups.map((g) => ({ id: g.id, name: g.name, color: g.color })),
   });
 }
 
 function computeDirty(e: EditorState): boolean {
   return e.savedSnapshot === null
-    ? e.source !== null && (e.segments.length > 0 || e.title.trim() !== '')
+    ? e.sources.length > 0 && (e.segments.length > 0 || e.title.trim() !== '')
     : serializeForSave(e) !== e.savedSnapshot;
 }
 
@@ -76,8 +89,8 @@ function emptyEditor(): EditorState {
     sessionId: makeId(),
     createdAt: Date.now(),
     title: '',
-    file: null,
-    source: null,
+    sources: [],
+    activeSourceId: null,
     segments: [],
     groups: [],
     activeGroupId: null,
@@ -105,8 +118,11 @@ interface AppContextValue {
 
   editor: EditorState;
   setTitle: (title: string) => void;
-  setSourceFile: (file: File, source: SourceMeta) => void;
-  clearSource: () => void;
+  // Sources
+  addSource: (file: File, meta: SourceMeta) => string;
+  replaceSourceFile: (sourceId: string, file: File, meta: SourceMeta) => void;
+  removeSource: (sourceId: string) => void;
+  setActiveSource: (sourceId: string) => void;
 
   addSegment: (segment?: Partial<Segment>) => string;
   updateSegment: (id: string, patch: Partial<Segment>) => void;
@@ -152,8 +168,10 @@ interface RawContextValue {
 /** Per-tab mutators, all taking the target tabId first. */
 interface TabMutators {
   setTitle: (tabId: string, title: string) => void;
-  setSourceFile: (tabId: string, file: File, source: SourceMeta) => void;
-  clearSource: (tabId: string) => void;
+  addSource: (tabId: string, file: File, meta: SourceMeta) => string;
+  replaceSourceFile: (tabId: string, sourceId: string, file: File, meta: SourceMeta) => void;
+  removeSource: (tabId: string, sourceId: string) => void;
+  setActiveSource: (tabId: string, sourceId: string) => void;
   addSegment: (tabId: string, segment?: Partial<Segment>) => string;
   updateSegment: (tabId: string, id: string, patch: Partial<Segment>) => void;
   removeSegment: (tabId: string, id: string) => void;
@@ -223,19 +241,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [updateTab]
   );
 
-  const setSourceFile = useCallback(
-    (tabId: string, file: File, source: SourceMeta) =>
+  const addSource = useCallback(
+    (tabId: string, file: File, meta: SourceMeta) => {
+      const id = makeId();
       updateTab(tabId, (e) => ({
         ...e,
-        file,
-        source,
-        title: e.title.trim() === '' ? source.name : e.title,
+        sources: [...e.sources, { id, meta, file }],
+        activeSourceId: id,
+        title: e.title.trim() === '' && e.sources.length === 0 ? meta.name : e.title,
+      }));
+      return id;
+    },
+    [updateTab]
+  );
+
+  const replaceSourceFile = useCallback(
+    (tabId: string, sourceId: string, file: File, meta: SourceMeta) =>
+      updateTab(tabId, (e) => ({
+        ...e,
+        sources: e.sources.map((s) => (s.id === sourceId ? { ...s, file, meta } : s)),
       })),
     [updateTab]
   );
 
-  const clearSource = useCallback(
-    (tabId: string) => updateTab(tabId, (e) => ({ ...e, file: null })),
+  const removeSource = useCallback(
+    (tabId: string, sourceId: string) =>
+      updateTab(tabId, (e) => {
+        const sources = e.sources.filter((s) => s.id !== sourceId);
+        // Segments cut from the removed source are dropped with it.
+        const segments = e.segments.filter((s) => s.sourceId !== sourceId);
+        const activeSourceId =
+          e.activeSourceId === sourceId ? sources[0]?.id ?? null : e.activeSourceId;
+        return { ...e, sources, segments, activeSourceId };
+      }),
+    [updateTab]
+  );
+
+  const setActiveSource = useCallback(
+    (tabId: string, sourceId: string) =>
+      updateTab(tabId, (e) => ({ ...e, activeSourceId: sourceId })),
     [updateTab]
   );
 
@@ -243,8 +287,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     (tabId: string, segment?: Partial<Segment>) => {
       const id = makeId();
       updateTab(tabId, (e) => {
+        if (!e.activeSourceId && segment?.sourceId == null) return e; // no source to cut from
+        const sourceId = segment?.sourceId ?? e.activeSourceId!;
         const groupId = segment?.groupId !== undefined ? segment.groupId : e.activeGroupId;
-        const siblings = e.segments.filter((s) => s.groupId === groupId);
+        const siblings = e.segments.filter(
+          (s) => s.groupId === groupId && s.sourceId === sourceId
+        );
         const last = siblings[siblings.length - 1];
         const defaultStart = segment?.start ?? (last ? last.end : 0);
         const defaultEnd = segment?.end ?? defaultStart + 5;
@@ -253,6 +301,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           start: defaultStart,
           end: defaultEnd,
           groupId: groupId ?? null,
+          sourceId,
         };
         return { ...e, segments: [...e.segments, newSeg], selectedSegmentId: id };
       });
@@ -355,9 +404,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ),
           };
         }
+        if (!e.activeSourceId) return e; // nothing to cut from
         const prev = e.segments[e.segments.length - 1];
         const groupId = prev ? prev.groupId : e.activeGroupId;
-        const newSeg: Segment = { id, start: time, end: time + MIN_SEGMENT, groupId: groupId ?? null };
+        const newSeg: Segment = {
+          id,
+          start: time,
+          end: time + MIN_SEGMENT,
+          groupId: groupId ?? null,
+          sourceId: e.activeSourceId,
+        };
         return { ...e, segments: [...e.segments, newSeg], openSegmentId: id, selectedSegmentId: id };
       });
     },
@@ -439,13 +495,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const saveProject = useCallback(
     (tabId: string) => {
       updateTab(tabId, (e) => {
-        if (!e.source) return e;
-        const title = e.title.trim() || e.source.name;
+        if (e.sources.length === 0) return e;
+        const title = e.title.trim() || e.sources[0].meta.name;
         const session = buildSession({
           id: e.sessionId,
           createdAt: e.createdAt,
           title,
-          source: e.source,
+          sources: e.sources.map((s) => ({ id: s.id, meta: s.meta })),
           segments: e.segments,
           groups: e.groups,
           outputName: `${title}.mp4`,
@@ -465,13 +521,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const newId = makeId();
       const now = Date.now();
       updateTab(tabId, (e) => {
-        if (!e.source) return e;
+        if (e.sources.length === 0) return e;
         const forked = { ...e, sessionId: newId, createdAt: now, title: trimmed };
         const session = buildSession({
           id: newId,
           createdAt: now,
           title: trimmed,
-          source: e.source,
+          sources: e.sources.map((s) => ({ id: s.id, meta: s.meta })),
           segments: e.segments,
           groups: e.groups,
           outputName: `${trimmed}.mp4`,
@@ -486,19 +542,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // ---- History ----
   const openSession = useCallback((session: ClipSession) => {
     // Open a saved session in its own new tab, preserving other open work.
+    const sources: EditorSource[] = (session.sources ?? []).map((s) => ({
+      id: s.id,
+      meta: s.meta,
+      file: null,
+    }));
     const opened: EditorState = {
       tabId: makeId(),
       sessionId: session.id,
       createdAt: session.createdAt,
       title: session.title,
-      file: null,
-      source: session.source,
+      sources,
+      activeSourceId: sources[0]?.id ?? null,
       groups: (session.groups ?? []).map((g) => ({ ...g })),
       segments: session.segments.map((s) => ({
         id: makeId(),
         start: s.start,
         end: s.end,
         groupId: s.groupId ?? null,
+        sourceId: s.sourceId,
       })),
       activeGroupId: null,
       selectedSegmentId: null,
@@ -519,8 +581,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const mutators = useMemo<TabMutators>(
     () => ({
       setTitle,
-      setSourceFile,
-      clearSource,
+      addSource,
+      replaceSourceFile,
+      removeSource,
+      setActiveSource,
       addSegment,
       updateSegment,
       removeSegment,
@@ -539,8 +603,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }),
     [
       setTitle,
-      setSourceFile,
-      clearSource,
+      addSource,
+      replaceSourceFile,
+      removeSource,
+      setActiveSource,
       addSegment,
       updateSegment,
       removeSegment,
@@ -605,9 +671,9 @@ export function useApp(): AppContextValue {
     () =>
       raw.tabs.map((t) => ({
         tabId: t.tabId,
-        title: t.title.trim() || (t.source ? t.source.name : 'Untitled'),
+        title: t.title.trim() || (t.sources[0] ? t.sources[0].meta.name : 'Untitled'),
         isDirty: computeDirty(t),
-        hasSource: t.source !== null,
+        hasSource: t.sources.length > 0,
       })),
     [raw.tabs]
   );
@@ -624,8 +690,11 @@ export function useApp(): AppContextValue {
       closeTab: raw.closeTab,
       editor,
       setTitle: (title) => m.setTitle(editor.tabId, title),
-      setSourceFile: (file, source) => m.setSourceFile(editor.tabId, file, source),
-      clearSource: () => m.clearSource(editor.tabId),
+      addSource: (file, meta) => m.addSource(editor.tabId, file, meta),
+      replaceSourceFile: (sourceId, file, meta) =>
+        m.replaceSourceFile(editor.tabId, sourceId, file, meta),
+      removeSource: (sourceId) => m.removeSource(editor.tabId, sourceId),
+      setActiveSource: (sourceId) => m.setActiveSource(editor.tabId, sourceId),
       addSegment: (segment) => m.addSegment(editor.tabId, segment),
       updateSegment: (id, patch) => m.updateSegment(editor.tabId, id, patch),
       removeSegment: (id) => m.removeSegment(editor.tabId, id),
@@ -645,7 +714,7 @@ export function useApp(): AppContextValue {
       saveAsVariation: (name) => m.saveAsVariation(editor.tabId, name),
       openSession: raw.openSession,
       deleteSession: raw.deleteSession,
-      needsReselect: editor.source !== null && editor.file === null,
+      needsReselect: editor.sources.some((s) => s.file === null),
       isDirty: computeDirty(editor),
       existsInHistory: raw.history.some((s) => s.id === editor.sessionId),
     }),

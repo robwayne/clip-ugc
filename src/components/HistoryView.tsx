@@ -66,10 +66,11 @@ function HistoryCard({
         <div className="min-w-0">
           <h3 className="truncate text-sm font-semibold">{session.title}</h3>
           <p className="mt-0.5 truncate text-xs text-white/50">
-            Source: {session.source.name} · {formatBytes(session.source.size)}
-            {session.source.duration != null && (
-              <> · {formatDuration(session.source.duration)}</>
-            )}
+            {session.sources.length === 1
+              ? `Source: ${session.sources[0].meta.name}`
+              : `${session.sources.length} sources: ${session.sources
+                  .map((s) => s.meta.name)
+                  .join(', ')}`}
           </p>
           <p className="mt-0.5 text-xs text-white/40">
             {session.segments.length} segment

@@ -3,7 +3,7 @@
 // Only metadata is stored (source name/size/duration, timestamp segments,
 // output name, timestamps). The actual video files are never persisted, so a
 // reopened session may need the user to reselect its source file.
-import type { ClipSession, Group, Segment, SourceMeta } from './types';
+import type { ClipSession, Group, Segment, SourceRefMeta } from './types';
 import { makeId } from './id';
 
 const STORAGE_KEY = 'clip-ugc:history:v1';
@@ -66,7 +66,7 @@ export function clearHistory(): void {
 export function buildSession(params: {
   id?: string;
   title: string;
-  source: SourceMeta;
+  sources: SourceRefMeta[];
   segments: Segment[];
   groups: Group[];
   outputName: string;
@@ -78,27 +78,42 @@ export function buildSession(params: {
     title: params.title,
     createdAt: params.createdAt ?? now,
     updatedAt: now,
-    source: params.source,
+    sources: params.sources.map((s) => ({ id: s.id, meta: s.meta })),
     segments: params.segments.map((s) => ({
       start: s.start,
       end: s.end,
       groupId: s.groupId ?? null,
+      sourceId: s.sourceId,
     })),
     groups: params.groups.map((g) => ({ id: g.id, name: g.name, color: g.color })),
     outputName: params.outputName,
   };
 }
 
-/** Backfill fields added after the first schema version. */
+/** Backfill fields added after earlier schema versions. */
 function normalizeSession(session: ClipSession): ClipSession {
   const groups = Array.isArray(session.groups) ? session.groups : [];
+  // Migrate single-source sessions to the multi-source shape.
+  const legacy = session as unknown as { source?: { name?: string } & object };
+  let sources: SourceRefMeta[];
+  if (Array.isArray(session.sources) && session.sources.length > 0) {
+    sources = session.sources;
+  } else if (legacy.source) {
+    sources = [{ id: makeId(), meta: legacy.source as SourceRefMeta['meta'] }];
+  } else {
+    sources = [];
+  }
+  const fallbackSourceId = sources[0]?.id ?? makeId();
+
   return {
     ...session,
+    sources,
     groups,
     segments: session.segments.map((s) => ({
       start: s.start,
       end: s.end,
       groupId: (s as { groupId?: string | null }).groupId ?? null,
+      sourceId: (s as { sourceId?: string }).sourceId ?? fallbackSourceId,
     })),
   };
 }
@@ -111,7 +126,7 @@ function isValidSession(value: unknown): value is ClipSession {
     typeof s.title === 'string' &&
     typeof s.createdAt === 'number' &&
     typeof s.updatedAt === 'number' &&
-    typeof s.source === 'object' &&
+    (typeof s.source === 'object' || Array.isArray(s.sources)) &&
     Array.isArray(s.segments)
   );
 }

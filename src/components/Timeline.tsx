@@ -20,6 +20,8 @@ interface TimelineProps {
   duration: number;
   currentTime: number;
   onSeek: (t: number) => void;
+  /** Only segments from this source are shown/edited on this timeline. */
+  sourceId: string;
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -44,7 +46,7 @@ function assignLanes(segments: Segment[]): Map<string, number> {
   return result;
 }
 
-export function Timeline({ duration, currentTime, onSeek }: TimelineProps) {
+export function Timeline({ duration, currentTime, onSeek, sourceId }: TimelineProps) {
   const {
     editor,
     addSegment,
@@ -54,7 +56,11 @@ export function Timeline({ duration, currentTime, onSeek }: TimelineProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<Drag | null>(null);
 
-  const segments = editor.segments;
+  // Only this source's segments live on this timeline.
+  const segments = useMemo(
+    () => editor.segments.filter((s) => s.sourceId === sourceId),
+    [editor.segments, sourceId]
+  );
   const groupColor = useMemo(() => {
     const map = new Map<string, string>();
     for (const g of editor.groups) map.set(g.id, g.color);

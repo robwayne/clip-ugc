@@ -1,12 +1,20 @@
 // Shared domain types for the clipping pipeline.
 
-/** A single trim range on the source timeline, in seconds. */
+/** A single trim range on a source video's timeline, in seconds. */
 export interface Segment {
   id: string;
   start: number;
   end: number;
   /** Group this segment belongs to, or null when ungrouped. */
   groupId: string | null;
+  /** Which source video this segment is cut from. */
+  sourceId: string;
+}
+
+/** A persisted reference to a source video (metadata only; no file). */
+export interface SourceRefMeta {
+  id: string;
+  meta: SourceMeta;
 }
 
 /** A named, colored bucket that segments can be assigned to. */
@@ -33,9 +41,14 @@ export interface ClipSession {
   title: string;
   createdAt: number;
   updatedAt: number;
-  source: SourceMeta;
-  /** Stored without ids; ids are regenerated when loaded into the editor. */
-  segments: Array<{ start: number; end: number; groupId: string | null }>;
+  /** All source videos used by this session (metadata only). */
+  sources: SourceRefMeta[];
+  segments: Array<{
+    start: number;
+    end: number;
+    groupId: string | null;
+    sourceId: string;
+  }>;
   groups: Group[];
   outputName: string;
 }

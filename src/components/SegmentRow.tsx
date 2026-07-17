@@ -9,6 +9,10 @@ interface SegmentRowProps {
   segment: Segment;
   duration: number | null;
   groups: Group[];
+  sources: Array<{ id: string; name: string }>;
+  sourceName: string;
+  /** Whether this segment's source is the one currently shown in the player. */
+  onActiveSource: boolean;
   selected: boolean;
   open: boolean;
   dragging: boolean;
@@ -23,6 +27,7 @@ interface SegmentRowProps {
   onDuplicate: () => void;
   onMove: (direction: -1 | 1) => void;
   onChangeGroup: (groupId: string | null) => void;
+  onChangeSource: (sourceId: string) => void;
   onSetStart: () => void;
   onSetEnd: () => void;
   onSeekStart: () => void;
@@ -36,6 +41,9 @@ export function SegmentRow({
   segment,
   duration,
   groups,
+  sources,
+  sourceName,
+  onActiveSource,
   selected,
   open,
   dragging,
@@ -50,6 +58,7 @@ export function SegmentRow({
   onDuplicate,
   onMove,
   onChangeGroup,
+  onChangeSource,
   onSetStart,
   onSetEnd,
   onSeekStart,
@@ -107,6 +116,21 @@ export function SegmentRow({
         <TimeField label="End" value={segment.end} onCommit={(v) => onUpdate({ end: v })} />
 
         <label className="block" onClick={(e) => e.stopPropagation()}>
+          <span className="label">Source</span>
+          <select
+            value={segment.sourceId}
+            onChange={(e) => onChangeSource(e.target.value)}
+            className="max-w-[9rem] rounded-lg border border-white/15 bg-black/30 px-2 py-1.5 text-sm outline-none focus:border-brand-400"
+          >
+            {sources.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="block" onClick={(e) => e.stopPropagation()}>
           <span className="label">Group</span>
           <select
             value={segment.groupId ?? ''}
@@ -126,10 +150,20 @@ export function SegmentRow({
           className="mb-0.5 flex flex-1 flex-wrap items-center justify-end gap-1"
           onClick={(e) => e.stopPropagation()}
         >
-          <button className="btn-ghost px-2 py-1 text-xs" onClick={onSetStart} title="Set start to playhead">
+          <button
+            className="btn-ghost px-2 py-1 text-xs"
+            onClick={onSetStart}
+            disabled={!onActiveSource}
+            title={onActiveSource ? 'Set start to playhead' : 'Make this segment’s source active to use the playhead'}
+          >
             Set start
           </button>
-          <button className="btn-ghost px-2 py-1 text-xs" onClick={onSetEnd} title="Set end to playhead">
+          <button
+            className="btn-ghost px-2 py-1 text-xs"
+            onClick={onSetEnd}
+            disabled={!onActiveSource}
+            title={onActiveSource ? 'Set end to playhead' : 'Make this segment’s source active to use the playhead'}
+          >
             Set end
           </button>
           <button className="btn-ghost px-2 py-1 text-xs" onClick={onSeekStart} title="Seek to start">

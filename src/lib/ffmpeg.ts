@@ -7,8 +7,7 @@
 // "final" video reuses the per-group results via `concatRenderedVideos`.
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
-import type { RenderProgress, SpliceResult, Segment } from './types';
-import { isValidSegment } from './groups';
+import type { RenderProgress, SpliceResult } from './types';
 
 let ffmpegSingleton: FFmpeg | null = null;
 let loadPromise: Promise<FFmpeg> | null = null;
@@ -21,8 +20,9 @@ let loadPromise: Promise<FFmpeg> | null = null;
 const MAX_CACHED_CLIPS = 240;
 const clipCache = new Map<string, string>(); // cacheKey -> FS filename (LRU order)
 let clipCounter = 0;
-let loadedSourceKey: string | null = null;
-let loadedInputName: string | null = null;
+// Each loaded source video keeps its own input file in the FS, reused across
+// splices, so segments from different videos can be combined.
+const loadedInputs = new Map<string, string>(); // sourceKey -> input filename
 // Guards the single shared worker so two tabs can't render into the same FS at
 // once (which would corrupt each other's clips).
 let renderBusy = false;
@@ -39,9 +39,19 @@ function clipCacheKey(sourceKey: string, start: number, end: number): string {
 function resetCacheState(): void {
   clipCache.clear();
   clipCounter = 0;
-  loadedSourceKey = null;
-  loadedInputName = null;
+  loadedInputs.clear();
   renderBusy = false;
+}
+
+/** Write a source into the FS once and reuse it; returns its input filename. */
+async function ensureInput(ffmpeg: FFmpeg, file: File): Promise<string> {
+  const key = sourceKeyOf(file);
+  const existing = loadedInputs.get(key);
+  if (existing) return existing;
+  const name = `src_${loadedInputs.size}.${extensionFromName(file.name)}`;
+  await ffmpeg.writeFile(name, await fetchFile(file));
+  loadedInputs.set(key, name);
+  return name;
 }
 
 /** Load (once) and return a ready ffmpeg instance. */
@@ -115,17 +125,21 @@ function extensionFromName(name: string): string {
   return match ? match[1].toLowerCase() : 'mp4';
 }
 
+/** One ordered clip to splice: a range cut from a specific source file. */
+export interface SpliceItem {
+  start: number;
+  end: number;
+  file: File;
+}
+
 /**
- * Splice an ordered list of segments from `file` into a single video.
- *
- * This is the core unit of work: it processes ONLY the segments passed in, so a
- * single group can be spliced and downloaded without touching any other group.
- * Each segment is re-encoded to a normalized clip in ffmpeg's in-memory FS,
- * then the clips are concatenated (stream copy) into one output.
+ * Splice an ordered list of items into a single video. Each item names its own
+ * source file, so segments cut from different source videos can be combined into
+ * one output. Each item is re-encoded to a normalized clip in ffmpeg's FS (or
+ * reused from cache), then the clips are concatenated (stream copy).
  */
 export async function renderSplice(
-  file: File,
-  segments: Segment[],
+  items: SpliceItem[],
   opts: {
     onProgress?: (progress: RenderProgress) => void;
     onLog?: (msg: string) => void;
@@ -139,9 +153,9 @@ export async function renderSplice(
     if (signal?.aborted) throw new RenderCancelledError();
   };
 
-  const ordered = segments.filter(isValidSegment);
+  const ordered = items.filter((it) => it.file && it.end > it.start);
   if (ordered.length === 0) {
-    throw new Error('Add at least one valid segment (end must be after start).');
+    throw new Error('Add at least one valid segment with an available source.');
   }
 
   throwIfAborted();
@@ -154,8 +168,7 @@ export async function renderSplice(
   const report = (ratio: number, stage: string) =>
     opts.onProgress?.({ ratio: Math.max(0, Math.min(1, ratio)), stage });
 
-  const sourceKey = sourceKeyOf(file);
-  const base = sanitizeBaseName(opts.outputBaseName ?? file.name);
+  const base = sanitizeBaseName(opts.outputBaseName ?? ordered[0].file.name);
   const label = sanitizeBaseName(opts.label ?? 'spliced');
 
   // Scratch = only the throwaway concat list + output. Cached clips persist.
@@ -174,31 +187,15 @@ export async function renderSplice(
   ffmpeg.on('progress', progressHandler);
 
   try {
-    // Load the source once; reused across splices of the same video.
-    if (loadedSourceKey !== sourceKey || !loadedInputName) {
-      report(0.02, 'Loading source video…');
-      const inputName = `input.${extensionFromName(file.name)}`;
-      if (loadedInputName && loadedInputName !== inputName) {
-        try {
-          await ffmpeg.deleteFile(loadedInputName);
-        } catch {
-          /* ignore */
-        }
-      }
-      await ffmpeg.writeFile(inputName, await fetchFile(file));
-      loadedInputName = inputName;
-      loadedSourceKey = sourceKey;
-    }
-    const inputName = loadedInputName;
-
     const clipNames: string[] = [];
     let reusedCount = 0;
     for (let i = 0; i < ordered.length; i++) {
       throwIfAborted();
-      const seg = ordered[i];
+      const item = ordered[i];
       currentClipNumber = i + 1;
       clipBaseRatio = 0.05 + i * perClip;
-      const key = clipCacheKey(sourceKey, seg.start, seg.end);
+      const sourceKey = sourceKeyOf(item.file);
+      const key = clipCacheKey(sourceKey, item.start, item.end);
 
       const cached = clipCache.get(key);
       if (cached) {
@@ -212,14 +209,15 @@ export async function renderSplice(
       }
 
       report(clipBaseRatio, `Cutting clip ${i + 1} of ${ordered.length}…`);
+      const inputName = await ensureInput(ffmpeg, item.file);
       const clipName = `cut_${clipCounter++}.mp4`;
       await ffmpeg.exec([
         '-ss',
-        seg.start.toFixed(3),
+        item.start.toFixed(3),
         '-i',
         inputName,
         '-t',
-        (seg.end - seg.start).toFixed(3),
+        (item.end - item.start).toFixed(3),
         '-c:v',
         'libx264',
         '-preset',

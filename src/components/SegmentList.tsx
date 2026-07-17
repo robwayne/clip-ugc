@@ -6,13 +6,16 @@ import { formatDuration, formatTimestamp, parseTimestamp } from '@/lib/time';
 import { computeBuckets, isValidSegment, totalOutputDuration } from '@/lib/groups';
 import { SegmentRow } from './SegmentRow';
 
+type Range = { start: number; end: number; sourceId: string };
+
 interface SegmentListProps {
   duration: number | null;
+  displaySourceId: string | null;
   getCurrentTime: () => number;
   seekTo: (seconds: number) => void;
-  previewRange: (start: number, end: number) => void;
-  playSegments: (ranges: Array<{ start: number; end: number }>, key: string) => void;
-  loopSegments: (ranges: Array<{ start: number; end: number }>, key: string) => void;
+  previewRange: (start: number, end: number, sourceId: string) => void;
+  playSegments: (ranges: Range[], key: string) => void;
+  loopSegments: (ranges: Range[], key: string) => void;
   stopPlayback: () => void;
   playingKey: string | null;
   loopingKey: string | null;
@@ -20,6 +23,7 @@ interface SegmentListProps {
 
 export function SegmentList({
   duration,
+  displaySourceId,
   getCurrentTime,
   seekTo,
   previewRange,
@@ -41,20 +45,20 @@ export function SegmentList({
   } = useApp();
   const segments = editor.segments;
   const buckets = computeBuckets(segments, editor.groups);
+  const sourceName = (id: string) =>
+    editor.sources.find((s) => s.id === id)?.meta.name ?? 'Unknown source';
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const draggingSeg = draggingId ? segments.find((s) => s.id === draggingId) : undefined;
 
   const totalOutput = totalOutputDuration(segments);
-  const invalidCount = segments.filter(
-    (s) => !(s.end > s.start) || (duration != null && (s.start < 0 || s.end > duration + 0.5))
-  ).length;
+  const invalidCount = segments.filter((s) => !(s.end > s.start)).length;
 
-  const allRanges = buckets
+  const allRanges: Range[] = buckets
     .flatMap((b) => b.segments)
     .filter(isValidSegment)
-    .map((s) => ({ start: s.start, end: s.end }));
+    .map((s) => ({ start: s.start, end: s.end, sourceId: s.sourceId }));
 
   const handleBulkAdd = () => {
     const raw = prompt(
@@ -124,9 +128,9 @@ export function SegmentList({
         <div className="space-y-5">
           {buckets.map((bucket) => {
             const bucketKey = `group:${bucket.groupId ?? '__ungrouped__'}`;
-            const bucketRanges = bucket.segments
+            const bucketRanges: Range[] = bucket.segments
               .filter(isValidSegment)
-              .map((s) => ({ start: s.start, end: s.end }));
+              .map((s) => ({ start: s.start, end: s.end, sourceId: s.sourceId }));
             const isPlaying = playingKey === bucketKey;
             const isLooping = loopingKey === bucketKey;
             const droppableGroup =
@@ -187,8 +191,14 @@ export function SegmentList({
                       key={segment.id}
                       label={String(i + 1)}
                       segment={segment}
-                      duration={duration}
+                      duration={
+                        editor.sources.find((s) => s.id === segment.sourceId)?.meta.duration ??
+                        null
+                      }
                       groups={editor.groups}
+                      sources={editor.sources.map((s) => ({ id: s.id, name: s.meta.name }))}
+                      sourceName={sourceName(segment.sourceId)}
+                      onActiveSource={segment.sourceId === displaySourceId}
                       selected={editor.selectedSegmentId === segment.id}
                       open={editor.openSegmentId === segment.id}
                       dragging={draggingId === segment.id}
@@ -216,14 +226,15 @@ export function SegmentList({
                       onDuplicate={() => duplicateSegment(segment.id)}
                       onMove={(dir) => moveSegmentWithinGroup(segment.id, dir)}
                       onChangeGroup={(groupId) => updateSegment(segment.id, { groupId })}
+                      onChangeSource={(sourceId) => updateSegment(segment.id, { sourceId })}
                       onSetStart={() => updateSegment(segment.id, { start: round(getCurrentTime()) })}
                       onSetEnd={() => updateSegment(segment.id, { end: round(getCurrentTime()) })}
                       onSeekStart={() => seekTo(segment.start)}
-                      onPreview={() => previewRange(segment.start, segment.end)}
+                      onPreview={() => previewRange(segment.start, segment.end, segment.sourceId)}
                       looping={loopingKey === `seg:${segment.id}`}
                       onLoop={() =>
                         loopSegments(
-                          [{ start: segment.start, end: segment.end }],
+                          [{ start: segment.start, end: segment.end, sourceId: segment.sourceId }],
                           `seg:${segment.id}`
                         )
                       }
