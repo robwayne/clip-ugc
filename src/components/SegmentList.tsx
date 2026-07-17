@@ -12,8 +12,10 @@ interface SegmentListProps {
   seekTo: (seconds: number) => void;
   previewRange: (start: number, end: number) => void;
   playSegments: (ranges: Array<{ start: number; end: number }>, key: string) => void;
+  loopSegments: (ranges: Array<{ start: number; end: number }>, key: string) => void;
   stopPlayback: () => void;
   playingKey: string | null;
+  loopingKey: string | null;
 }
 
 export function SegmentList({
@@ -22,8 +24,10 @@ export function SegmentList({
   seekTo,
   previewRange,
   playSegments,
+  loopSegments,
   stopPlayback,
   playingKey,
+  loopingKey,
 }: SegmentListProps) {
   const {
     editor,
@@ -124,6 +128,7 @@ export function SegmentList({
               .filter(isValidSegment)
               .map((s) => ({ start: s.start, end: s.end }));
             const isPlaying = playingKey === bucketKey;
+            const isLooping = loopingKey === bucketKey;
             const droppableGroup =
               draggingSeg != null && draggingSeg.groupId === bucket.groupId;
 
@@ -139,23 +144,42 @@ export function SegmentList({
                     {bucket.segments.length} segment{bucket.segments.length === 1 ? '' : 's'} ·{' '}
                     {formatDuration(totalOutputDuration(bucket.segments))}
                   </span>
-                  {bucketRanges.length > 0 &&
-                    (isPlaying ? (
+                  {bucketRanges.length > 0 && (
+                    <>
+                      {isPlaying && !isLooping ? (
+                        <button
+                          className="btn-ghost px-2 py-1 text-xs text-red-300"
+                          onClick={stopPlayback}
+                        >
+                          ⏸ Stop
+                        </button>
+                      ) : (
+                        <button
+                          className="btn-ghost px-2 py-1 text-xs"
+                          onClick={() => playSegments(bucketRanges, bucketKey)}
+                          title="Play this group's clips back-to-back, in order"
+                        >
+                          ▶ Play group
+                        </button>
+                      )}
                       <button
-                        className="btn-ghost px-2 py-1 text-xs text-red-300"
-                        onClick={stopPlayback}
+                        className={`px-2 py-1 text-xs ${
+                          isLooping
+                            ? 'btn rounded-lg bg-brand-600/30 text-brand-100'
+                            : 'btn-ghost'
+                        }`}
+                        onClick={() => loopSegments(bucketRanges, bucketKey)}
+                        title={
+                          isLooping
+                            ? 'Looping this group — click to stop'
+                            : 'Loop this group continuously'
+                        }
+                        aria-pressed={isLooping}
                       >
-                        ⏸ Stop
+                        🔁 {isLooping ? 'Looping' : 'Loop Group'}
                       </button>
-                    ) : (
-                      <button
-                        className="btn-ghost px-2 py-1 text-xs"
-                        onClick={() => playSegments(bucketRanges, bucketKey)}
-                        title="Play this group's clips back-to-back, in order"
-                      >
-                        ▶ Play group
-                      </button>
-                    ))}
+                    </>
+                  )}
                 </div>
                 <ul className="space-y-2">
                   {bucket.segments.map((segment, i) => (
@@ -196,6 +220,13 @@ export function SegmentList({
                       onSetEnd={() => updateSegment(segment.id, { end: round(getCurrentTime()) })}
                       onSeekStart={() => seekTo(segment.start)}
                       onPreview={() => previewRange(segment.start, segment.end)}
+                      looping={loopingKey === `seg:${segment.id}`}
+                      onLoop={() =>
+                        loopSegments(
+                          [{ start: segment.start, end: segment.end }],
+                          `seg:${segment.id}`
+                        )
+                      }
                     />
                   ))}
                 </ul>

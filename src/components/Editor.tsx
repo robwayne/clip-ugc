@@ -27,11 +27,15 @@ export function Editor() {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   // Active back-to-back playback sequence (used for previewing a range or a
-  // whole group as if its clips were already concatenated).
-  const sequenceRef = useRef<{ ranges: Array<{ start: number; end: number }>; i: number } | null>(
-    null
-  );
+  // whole group as if its clips were already concatenated). When `loop` is set
+  // it restarts from the first range instead of stopping at the end.
+  const sequenceRef = useRef<{
+    ranges: Array<{ start: number; end: number }>;
+    i: number;
+    loop: boolean;
+  } | null>(null);
   const [playingKey, setPlayingKey] = useState<string | null>(null);
+  const [loopingKey, setLoopingKey] = useState<string | null>(null);
 
   // Manage the object URL for the loaded file.
   useEffect(() => {
@@ -78,10 +82,15 @@ export function Editor() {
           if (next < seq.ranges.length) {
             seq.i = next;
             video.currentTime = seq.ranges[next].start;
+          } else if (seq.loop) {
+            // Loop: jump back to the first range and keep playing.
+            seq.i = 0;
+            video.currentTime = seq.ranges[0].start;
           } else {
             video.pause();
             sequenceRef.current = null;
             setPlayingKey(null);
+            setLoopingKey(null);
             return;
           }
         }
@@ -102,6 +111,7 @@ export function Editor() {
       videoRef.current?.pause();
       sequenceRef.current = null;
       setPlayingKey(null);
+      setLoopingKey(null);
     }
   }, [isActive]);
 
@@ -139,18 +149,21 @@ export function Editor() {
     if (!video) return;
     sequenceRef.current = null;
     setPlayingKey(null);
+    setLoopingKey(null);
     video.currentTime = Math.max(0, seconds);
     video.focus?.();
   }, []);
 
-  // Play an ordered list of ranges back-to-back, as if they were concatenated.
-  const playSegments = useCallback(
-    (ranges: Array<{ start: number; end: number }>, key: string) => {
+  // Play an ordered list of ranges back-to-back, optionally looping. Starting
+  // any playback replaces whatever was playing/looping (only one at a time).
+  const startSequence = useCallback(
+    (ranges: Array<{ start: number; end: number }>, key: string, loop: boolean) => {
       const video = videoRef.current;
       const valid = ranges.filter((r) => r.end > r.start);
       if (!video || valid.length === 0) return;
-      sequenceRef.current = { ranges: valid, i: 0 };
+      sequenceRef.current = { ranges: valid, i: 0, loop };
       setPlayingKey(key);
+      setLoopingKey(loop ? key : null);
       video.currentTime = Math.max(0, valid[0].start);
       video.play().catch(() => {
         // Autoplay blocked (e.g. no user gesture); leave the sequence armed so
@@ -160,10 +173,32 @@ export function Editor() {
     []
   );
 
+  const playSegments = useCallback(
+    (ranges: Array<{ start: number; end: number }>, key: string) =>
+      startSequence(ranges, key, false),
+    [startSequence]
+  );
+
+  // Toggle looping for a set of ranges: clicking the one already looping stops.
+  const loopSegments = useCallback(
+    (ranges: Array<{ start: number; end: number }>, key: string) => {
+      if (loopingKey === key) {
+        sequenceRef.current = null;
+        setPlayingKey(null);
+        setLoopingKey(null);
+        videoRef.current?.pause();
+        return;
+      }
+      startSequence(ranges, key, true);
+    },
+    [loopingKey, startSequence]
+  );
+
   const stopPlayback = useCallback(() => {
     const video = videoRef.current;
     sequenceRef.current = null;
     setPlayingKey(null);
+    setLoopingKey(null);
     video?.pause();
   }, []);
 
@@ -245,8 +280,10 @@ export function Editor() {
           seekTo={seekTo}
           previewRange={previewRange}
           playSegments={playSegments}
+          loopSegments={loopSegments}
           stopPlayback={stopPlayback}
           playingKey={playingKey}
+          loopingKey={loopingKey}
         />
       )}
 

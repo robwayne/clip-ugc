@@ -35,6 +35,9 @@ machine, and no server-side storage is required.
   Hit **Play group** to preview a group's clips back-to-back — as if already
   concatenated — or **Play all** to preview the whole final splice, without
   rendering anything.
+- **Loop** — 🔁 loop any single segment or a whole group so it keeps replaying.
+  Only one thing loops at a time; starting a new loop takes over, and the active
+  loop is highlighted.
 - **Per-group splice & download** (primary flow) — splice and download each
   group on its own, saved using the group name, without processing any other
   group. Each group has its own splice/progress/cancel/download. Combining every

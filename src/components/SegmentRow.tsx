@@ -27,6 +27,8 @@ interface SegmentRowProps {
   onSetEnd: () => void;
   onSeekStart: () => void;
   onPreview: () => void;
+  looping: boolean;
+  onLoop: () => void;
 }
 
 export function SegmentRow({
@@ -52,6 +54,8 @@ export function SegmentRow({
   onSetEnd,
   onSeekStart,
   onPreview,
+  looping,
+  onLoop,
 }: SegmentRowProps) {
   const invalid = !(segment.end > segment.start);
   const outOfRange =
@@ -133,6 +137,17 @@ export function SegmentRow({
           </button>
           <button className="btn-ghost px-2 py-1 text-xs" onClick={onPreview} title="Preview this range">
             ▶
+          </button>
+          <button
+            className={`px-2 py-1 text-xs ${
+              looping ? 'btn rounded-lg bg-brand-600/30 text-brand-100' : 'btn-ghost'
+            }`}
+            onClick={onLoop}
+            title={looping ? 'Looping this segment — click to stop' : 'Loop this segment'}
+            aria-pressed={looping}
+            aria-label="Loop segment"
+          >
+            🔁
           </button>
           <button className="btn-ghost px-2 py-1 text-xs" onClick={() => onMove(-1)} title="Move earlier in group">
             ↑
