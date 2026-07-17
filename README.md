@@ -13,6 +13,10 @@ machine, and no server-side storage is required.
 - **Cut & splice** — enter ranges like `00:00 – 00:10`, `00:15 – 00:19`,
   `00:38 – 00:39`, `00:55 – 01:00`; the app extracts each range and concatenates
   them into one video.
+- **Multiple tabs** — open several tabs to edit different videos and sessions at
+  once. Each tab keeps its own source, segments, groups, playback, and save
+  state; keyboard shortcuts only affect the active tab. Opening a saved session
+  from history opens it in its own tab.
 - **Visual timeline** — a draggable track under the player: drag empty space to
   create a segment, drag a bar to move it, drag its edges to trim, and click to
   seek. Overlapping segments stack into lanes and are color-coded by group.

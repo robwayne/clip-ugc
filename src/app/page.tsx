@@ -2,7 +2,7 @@
 
 import { useApp } from '@/context/AppContext';
 import { Header } from '@/components/Header';
-import { Editor } from '@/components/Editor';
+import { Workspace } from '@/components/Workspace';
 import { HistoryView } from '@/components/HistoryView';
 
 export default function Home() {
@@ -18,12 +18,12 @@ export default function Home() {
                 Cut a video, splice the moments you want
               </h1>
               <p className="mt-1 text-sm text-white/50">
-                Upload a source video, mark timestamp ranges, and get one stitched
-                output — plus each clip on its own if you want it. Everything runs
-                locally in your browser.
+                Upload a source video, mark timestamp ranges, and splice each group
+                on its own. Open multiple tabs to edit several videos at once.
+                Everything runs locally in your browser.
               </p>
             </div>
-            <Editor />
+            <Workspace />
           </>
         ) : (
           <>

@@ -1,9 +1,14 @@
 'use client';
 
-// App-wide state: the current editor session (source file, segments, groups)
-// plus the persisted history. Kept in a context so switching between the Editor
-// and History views preserves the in-memory File (letting users retry edits
-// without reselecting), while history survives reloads via localStorage.
+// App-wide state. The workspace holds multiple open editor "tabs", each an
+// independent session (its own source video, segments, groups, save state), so
+// several videos can be edited simultaneously. History is shared and persists
+// via localStorage.
+//
+// Components read the editor and call mutators through useApp(). Which tab those
+// resolve to is determined by the nearest <TabScope> (each mounted tab wraps its
+// subtree in one); outside a TabScope they resolve to the active tab. This keeps
+// every editor component tab-agnostic.
 import {
   createContext,
   useContext,
@@ -26,6 +31,8 @@ import {
 export type View = 'editor' | 'history';
 
 interface EditorState {
+  /** Stable identity of this open tab (distinct from sessionId). */
+  tabId: string;
   sessionId: string;
   createdAt: number;
   title: string;
@@ -33,19 +40,21 @@ interface EditorState {
   source: SourceMeta | null;
   segments: Segment[];
   groups: Group[];
-  /** New segments are assigned to this group (null = ungrouped). */
   activeGroupId: string | null;
-  /** Currently highlighted segment (shared between timeline and list). */
   selectedSegmentId: string | null;
-  /** Segment currently being recorded via the S key (open, awaiting E). */
   openSegmentId: string | null;
-  /** Most recently closed segment, so a repeated E can adjust its end. */
   lastClosedSegmentId: string | null;
-  /** Serialized editor state at the last save/open; null if never saved. */
   savedSnapshot: string | null;
 }
 
-/** Serialize the savable parts of the editor to detect unsaved changes. */
+/** Lightweight tab descriptor for the tab bar. */
+export interface TabMeta {
+  tabId: string;
+  title: string;
+  isDirty: boolean;
+  hasSource: boolean;
+}
+
 function serializeForSave(e: EditorState): string {
   return JSON.stringify({
     title: e.title.trim(),
@@ -55,56 +64,15 @@ function serializeForSave(e: EditorState): string {
   });
 }
 
-interface AppContextValue {
-  view: View;
-  setView: (v: View) => void;
-
-  editor: EditorState;
-  setTitle: (title: string) => void;
-  setSourceFile: (file: File, source: SourceMeta) => void;
-  clearSource: () => void;
-
-  // Segments
-  addSegment: (segment?: Partial<Segment>) => string;
-  updateSegment: (id: string, patch: Partial<Segment>) => void;
-  removeSegment: (id: string) => void;
-  duplicateSegment: (id: string) => void;
-  moveSegmentWithinGroup: (id: string, direction: -1 | 1) => void;
-  moveSegmentBefore: (dragId: string, targetId: string) => void;
-  setSelectedSegment: (id: string | null) => void;
-  /** S key: open a segment at `time`, or reset the open segment's start. */
-  markStart: (time: number) => void;
-  /** E key: close the open segment at `time`, or adjust the last one's end. */
-  markEnd: (time: number) => void;
-
-  // Groups
-  addGroup: (name?: string) => string;
-  renameGroup: (id: string, name: string) => void;
-  removeGroup: (id: string) => void;
-  setActiveGroup: (id: string | null) => void;
-
-  resetEditor: () => void;
-
-  history: ClipSession[];
-  saveCurrentSession: (outputName?: string) => void;
-  /** Manually save/update the current project in history. */
-  saveProject: () => void;
-  /** Fork the current edits into a brand-new named session (variation). */
-  saveAsVariation: (name: string) => void;
-  openSession: (session: ClipSession) => void;
-  deleteSession: (id: string) => void;
-
-  needsReselect: boolean;
-  /** True when the current editor has unsaved changes. */
-  isDirty: boolean;
-  /** True when the current session already exists in history. */
-  existsInHistory: boolean;
+function computeDirty(e: EditorState): boolean {
+  return e.savedSnapshot === null
+    ? e.source !== null && (e.segments.length > 0 || e.title.trim() !== '')
+    : serializeForSave(e) !== e.savedSnapshot;
 }
-
-const AppContext = createContext<AppContextValue | null>(null);
 
 function emptyEditor(): EditorState {
   return {
+    tabId: makeId(),
     sessionId: makeId(),
     createdAt: Date.now(),
     title: '',
@@ -120,310 +88,427 @@ function emptyEditor(): EditorState {
   };
 }
 
-/** Minimum clip length used when opening/adjusting via keyboard. */
 const MIN_SEGMENT = 0.05;
+
+/** The public surface, resolved to a specific tab by useApp(). */
+interface AppContextValue {
+  view: View;
+  setView: (v: View) => void;
+
+  // Tabs
+  tabs: TabMeta[];
+  activeTabId: string;
+  tabId: string;
+  setActiveTab: (id: string) => void;
+  newTab: () => void;
+  closeTab: (id: string) => void;
+
+  editor: EditorState;
+  setTitle: (title: string) => void;
+  setSourceFile: (file: File, source: SourceMeta) => void;
+  clearSource: () => void;
+
+  addSegment: (segment?: Partial<Segment>) => string;
+  updateSegment: (id: string, patch: Partial<Segment>) => void;
+  removeSegment: (id: string) => void;
+  duplicateSegment: (id: string) => void;
+  moveSegmentWithinGroup: (id: string, direction: -1 | 1) => void;
+  moveSegmentBefore: (dragId: string, targetId: string) => void;
+  setSelectedSegment: (id: string | null) => void;
+  markStart: (time: number) => void;
+  markEnd: (time: number) => void;
+
+  addGroup: (name?: string) => string;
+  renameGroup: (id: string, name: string) => void;
+  removeGroup: (id: string) => void;
+  setActiveGroup: (id: string | null) => void;
+
+  history: ClipSession[];
+  saveProject: () => void;
+  saveAsVariation: (name: string) => void;
+  openSession: (session: ClipSession) => void;
+  deleteSession: (id: string) => void;
+
+  needsReselect: boolean;
+  isDirty: boolean;
+  existsInHistory: boolean;
+}
+
+/** Raw provider value: mutators take a tabId; useApp() binds them. */
+interface RawContextValue {
+  view: View;
+  setView: (v: View) => void;
+  tabs: EditorState[];
+  activeTabId: string;
+  setActiveTab: (id: string) => void;
+  newTab: () => void;
+  closeTab: (id: string) => void;
+  history: ClipSession[];
+  openSession: (session: ClipSession) => void;
+  deleteSession: (id: string) => void;
+  m: TabMutators;
+}
+
+/** Per-tab mutators, all taking the target tabId first. */
+interface TabMutators {
+  setTitle: (tabId: string, title: string) => void;
+  setSourceFile: (tabId: string, file: File, source: SourceMeta) => void;
+  clearSource: (tabId: string) => void;
+  addSegment: (tabId: string, segment?: Partial<Segment>) => string;
+  updateSegment: (tabId: string, id: string, patch: Partial<Segment>) => void;
+  removeSegment: (tabId: string, id: string) => void;
+  duplicateSegment: (tabId: string, id: string) => void;
+  moveSegmentWithinGroup: (tabId: string, id: string, direction: -1 | 1) => void;
+  moveSegmentBefore: (tabId: string, dragId: string, targetId: string) => void;
+  setSelectedSegment: (tabId: string, id: string | null) => void;
+  markStart: (tabId: string, time: number) => void;
+  markEnd: (tabId: string, time: number) => void;
+  addGroup: (tabId: string, name?: string) => string;
+  renameGroup: (tabId: string, id: string, name: string) => void;
+  removeGroup: (tabId: string, id: string) => void;
+  setActiveGroup: (tabId: string, id: string | null) => void;
+  saveProject: (tabId: string) => void;
+  saveAsVariation: (tabId: string, name: string) => void;
+}
+
+const RawContext = createContext<RawContextValue | null>(null);
+/** Scopes the subtree's useApp() to a specific tab. */
+export const TabScope = createContext<string | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [view, setView] = useState<View>('editor');
-  const [editor, setEditor] = useState<EditorState>(emptyEditor);
+  const [tabs, setTabs] = useState<EditorState[]>(() => [emptyEditor()]);
+  const [activeTabId, setActiveTabId] = useState<string>(() => tabs[0].tabId);
   const [history, setHistory] = useState<ClipSession[]>([]);
 
   useEffect(() => {
     setHistory(loadHistory());
   }, []);
 
-  const setTitle = useCallback((title: string) => {
-    setEditor((e) => ({ ...e, title }));
+  const updateTab = useCallback(
+    (tabId: string, fn: (e: EditorState) => EditorState) => {
+      setTabs((ts) => ts.map((t) => (t.tabId === tabId ? fn(t) : t)));
+    },
+    []
+  );
+
+  // ---- Tab management ----
+  const setActiveTab = useCallback((id: string) => setActiveTabId(id), []);
+
+  const newTab = useCallback(() => {
+    const tab = emptyEditor();
+    setTabs((ts) => [...ts, tab]);
+    setActiveTabId(tab.tabId);
   }, []);
 
-  const setSourceFile = useCallback((file: File, source: SourceMeta) => {
-    setEditor((e) => ({
-      ...e,
-      file,
-      source,
-      title: e.title.trim() === '' ? source.name : e.title,
-    }));
-  }, []);
-
-  const clearSource = useCallback(() => {
-    setEditor((e) => ({ ...e, file: null }));
-  }, []);
-
-  const addSegment = useCallback((segment?: Partial<Segment>) => {
-    const id = makeId();
-    setEditor((e) => {
-      const groupId =
-        segment?.groupId !== undefined ? segment.groupId : e.activeGroupId;
-      const siblings = e.segments.filter((s) => s.groupId === groupId);
-      const last = siblings[siblings.length - 1];
-      const defaultStart = segment?.start ?? (last ? last.end : 0);
-      const defaultEnd = segment?.end ?? defaultStart + 5;
-      const newSeg: Segment = {
-        id,
-        start: defaultStart,
-        end: defaultEnd,
-        groupId: groupId ?? null,
-      };
-      return { ...e, segments: [...e.segments, newSeg], selectedSegmentId: id };
+  const closeTab = useCallback((id: string) => {
+    setTabs((ts) => {
+      const idx = ts.findIndex((t) => t.tabId === id);
+      if (idx < 0) return ts;
+      const next = ts.filter((t) => t.tabId !== id);
+      const list = next.length > 0 ? next : [emptyEditor()];
+      // Move active selection if we closed the active tab.
+      setActiveTabId((current) => {
+        if (current !== id) return current;
+        const neighbor = list[Math.min(idx, list.length - 1)];
+        return neighbor.tabId;
+      });
+      return list;
     });
-    return id;
   }, []);
 
-  const updateSegment = useCallback((id: string, patch: Partial<Segment>) => {
-    setEditor((e) => ({
-      ...e,
-      segments: e.segments.map((s) => (s.id === id ? { ...s, ...patch } : s)),
-    }));
-  }, []);
+  // ---- Editor mutators (tabId-scoped) ----
+  const setTitle = useCallback(
+    (tabId: string, title: string) => updateTab(tabId, (e) => ({ ...e, title })),
+    [updateTab]
+  );
 
-  const removeSegment = useCallback((id: string) => {
-    setEditor((e) => ({
-      ...e,
-      segments: e.segments.filter((s) => s.id !== id),
-      selectedSegmentId: e.selectedSegmentId === id ? null : e.selectedSegmentId,
-      openSegmentId: e.openSegmentId === id ? null : e.openSegmentId,
-      lastClosedSegmentId: e.lastClosedSegmentId === id ? null : e.lastClosedSegmentId,
-    }));
-  }, []);
-
-  // S key. When a segment is already open, reset its start; otherwise open a
-  // new segment at `time`, inheriting the group of the most recent segment.
-  const markStart = useCallback((time: number) => {
-    const id = makeId();
-    setEditor((e) => {
-      if (e.openSegmentId) {
-        return {
-          ...e,
-          segments: e.segments.map((s) =>
-            s.id === e.openSegmentId
-              ? { ...s, start: time, end: Math.max(s.end, time + MIN_SEGMENT) }
-              : s
-          ),
-        };
-      }
-      const prev = e.segments[e.segments.length - 1];
-      const groupId = prev ? prev.groupId : e.activeGroupId;
-      const newSeg: Segment = {
-        id,
-        start: time,
-        end: time + MIN_SEGMENT,
-        groupId: groupId ?? null,
-      };
-      return {
+  const setSourceFile = useCallback(
+    (tabId: string, file: File, source: SourceMeta) =>
+      updateTab(tabId, (e) => ({
         ...e,
-        segments: [...e.segments, newSeg],
-        openSegmentId: id,
-        selectedSegmentId: id,
-      };
-    });
-  }, []);
+        file,
+        source,
+        title: e.title.trim() === '' ? source.name : e.title,
+      })),
+    [updateTab]
+  );
 
-  // E key. Close the open segment at `time`; if none is open, adjust the end of
-  // the most recently closed segment instead.
-  const markEnd = useCallback((time: number) => {
-    setEditor((e) => {
-      if (e.openSegmentId) {
-        const openId = e.openSegmentId;
-        return {
-          ...e,
-          segments: e.segments.map((s) =>
-            s.id === openId
-              ? { ...s, end: Math.max(time, s.start + MIN_SEGMENT) }
-              : s
-          ),
-          openSegmentId: null,
-          lastClosedSegmentId: openId,
-          selectedSegmentId: openId,
+  const clearSource = useCallback(
+    (tabId: string) => updateTab(tabId, (e) => ({ ...e, file: null })),
+    [updateTab]
+  );
+
+  const addSegment = useCallback(
+    (tabId: string, segment?: Partial<Segment>) => {
+      const id = makeId();
+      updateTab(tabId, (e) => {
+        const groupId = segment?.groupId !== undefined ? segment.groupId : e.activeGroupId;
+        const siblings = e.segments.filter((s) => s.groupId === groupId);
+        const last = siblings[siblings.length - 1];
+        const defaultStart = segment?.start ?? (last ? last.end : 0);
+        const defaultEnd = segment?.end ?? defaultStart + 5;
+        const newSeg: Segment = {
+          id,
+          start: defaultStart,
+          end: defaultEnd,
+          groupId: groupId ?? null,
         };
-      }
-      if (e.lastClosedSegmentId) {
-        const lastId = e.lastClosedSegmentId;
-        return {
-          ...e,
-          segments: e.segments.map((s) =>
-            s.id === lastId
-              ? { ...s, end: Math.max(time, s.start + MIN_SEGMENT) }
-              : s
-          ),
-          selectedSegmentId: lastId,
-        };
-      }
-      return e;
-    });
-  }, []);
+        return { ...e, segments: [...e.segments, newSeg], selectedSegmentId: id };
+      });
+      return id;
+    },
+    [updateTab]
+  );
 
-  const duplicateSegment = useCallback((id: string) => {
-    const newId = makeId();
-    setEditor((e) => {
-      const idx = e.segments.findIndex((s) => s.id === id);
-      if (idx < 0) return e;
-      const original = e.segments[idx];
-      const copy: Segment = { ...original, id: newId };
-      const segments = [...e.segments];
-      segments.splice(idx + 1, 0, copy);
-      return { ...e, segments, selectedSegmentId: newId };
-    });
-  }, []);
+  const updateSegment = useCallback(
+    (tabId: string, id: string, patch: Partial<Segment>) =>
+      updateTab(tabId, (e) => ({
+        ...e,
+        segments: e.segments.map((s) => (s.id === id ? { ...s, ...patch } : s)),
+      })),
+    [updateTab]
+  );
 
-  const moveSegmentWithinGroup = useCallback((id: string, direction: -1 | 1) => {
-    setEditor((e) => {
-      const idx = e.segments.findIndex((s) => s.id === id);
-      if (idx < 0) return e;
-      const groupId = e.segments[idx].groupId;
-      // Find the neighbor in the same group in the given direction.
-      let swapIdx = -1;
-      for (
-        let j = idx + direction;
-        j >= 0 && j < e.segments.length;
-        j += direction
-      ) {
-        if (e.segments[j].groupId === groupId) {
-          swapIdx = j;
-          break;
+  const removeSegment = useCallback(
+    (tabId: string, id: string) =>
+      updateTab(tabId, (e) => ({
+        ...e,
+        segments: e.segments.filter((s) => s.id !== id),
+        selectedSegmentId: e.selectedSegmentId === id ? null : e.selectedSegmentId,
+        openSegmentId: e.openSegmentId === id ? null : e.openSegmentId,
+        lastClosedSegmentId: e.lastClosedSegmentId === id ? null : e.lastClosedSegmentId,
+      })),
+    [updateTab]
+  );
+
+  const duplicateSegment = useCallback(
+    (tabId: string, id: string) => {
+      const newId = makeId();
+      updateTab(tabId, (e) => {
+        const idx = e.segments.findIndex((s) => s.id === id);
+        if (idx < 0) return e;
+        const copy: Segment = { ...e.segments[idx], id: newId };
+        const segments = [...e.segments];
+        segments.splice(idx + 1, 0, copy);
+        return { ...e, segments, selectedSegmentId: newId };
+      });
+    },
+    [updateTab]
+  );
+
+  const moveSegmentWithinGroup = useCallback(
+    (tabId: string, id: string, direction: -1 | 1) =>
+      updateTab(tabId, (e) => {
+        const idx = e.segments.findIndex((s) => s.id === id);
+        if (idx < 0) return e;
+        const groupId = e.segments[idx].groupId;
+        let swapIdx = -1;
+        for (let j = idx + direction; j >= 0 && j < e.segments.length; j += direction) {
+          if (e.segments[j].groupId === groupId) {
+            swapIdx = j;
+            break;
+          }
         }
-      }
-      if (swapIdx < 0) return e;
-      const segments = [...e.segments];
-      [segments[idx], segments[swapIdx]] = [segments[swapIdx], segments[idx]];
-      return { ...e, segments };
-    });
-  }, []);
+        if (swapIdx < 0) return e;
+        const segments = [...e.segments];
+        [segments[idx], segments[swapIdx]] = [segments[swapIdx], segments[idx]];
+        return { ...e, segments };
+      }),
+    [updateTab]
+  );
 
-  // Reorder by dropping `dragId` immediately before `targetId` in the global
-  // segment array. Used for drag-and-drop reordering within a group; because
-  // both belong to the same group, this only changes their relative order.
-  const moveSegmentBefore = useCallback((dragId: string, targetId: string) => {
-    if (dragId === targetId) return;
-    setEditor((e) => {
-      const segs = [...e.segments];
-      const from = segs.findIndex((s) => s.id === dragId);
-      if (from < 0) return e;
-      const [moved] = segs.splice(from, 1);
-      const to = segs.findIndex((s) => s.id === targetId);
-      if (to < 0) return e;
-      segs.splice(to, 0, moved);
-      return { ...e, segments: segs };
-    });
-  }, []);
-
-  const setSelectedSegment = useCallback((id: string | null) => {
-    setEditor((e) => ({ ...e, selectedSegmentId: id }));
-  }, []);
-
-  const addGroup = useCallback((name?: string) => {
-    const id = makeId();
-    setEditor((e) => {
-      const group: Group = {
-        id,
-        name: name?.trim() || `Group ${e.groups.length + 1}`,
-        color: nextGroupColor(e.groups),
-      };
-      return { ...e, groups: [...e.groups, group], activeGroupId: id };
-    });
-    return id;
-  }, []);
-
-  const renameGroup = useCallback((id: string, name: string) => {
-    setEditor((e) => ({
-      ...e,
-      groups: e.groups.map((g) => (g.id === id ? { ...g, name } : g)),
-    }));
-  }, []);
-
-  const removeGroup = useCallback((id: string) => {
-    setEditor((e) => ({
-      ...e,
-      groups: e.groups.filter((g) => g.id !== id),
-      // Segments in the removed group fall back to ungrouped.
-      segments: e.segments.map((s) => (s.groupId === id ? { ...s, groupId: null } : s)),
-      activeGroupId: e.activeGroupId === id ? null : e.activeGroupId,
-    }));
-  }, []);
-
-  const setActiveGroup = useCallback((id: string | null) => {
-    setEditor((e) => ({ ...e, activeGroupId: id }));
-  }, []);
-
-  const resetEditor = useCallback(() => {
-    setEditor(emptyEditor());
-  }, []);
-
-  const saveCurrentSession = useCallback((outputName?: string) => {
-    setEditor((e) => {
-      if (!e.source) return e;
-      const title = e.title.trim() || e.source.name;
-      const session = buildSession({
-        id: e.sessionId,
-        createdAt: e.createdAt,
-        title,
-        source: e.source,
-        segments: e.segments,
-        groups: e.groups,
-        outputName: outputName ?? `${title}.mp4`,
+  const moveSegmentBefore = useCallback(
+    (tabId: string, dragId: string, targetId: string) => {
+      if (dragId === targetId) return;
+      updateTab(tabId, (e) => {
+        const segs = [...e.segments];
+        const from = segs.findIndex((s) => s.id === dragId);
+        if (from < 0) return e;
+        const [moved] = segs.splice(from, 1);
+        const to = segs.findIndex((s) => s.id === targetId);
+        if (to < 0) return e;
+        segs.splice(to, 0, moved);
+        return { ...e, segments: segs };
       });
-      setHistory(upsertSession(session));
-      const saved = { ...e, title };
-      return { ...saved, savedSnapshot: serializeForSave(saved) };
-    });
-  }, []);
+    },
+    [updateTab]
+  );
 
-  /** Manually save/update the current project in history. */
-  const saveProject = useCallback(() => saveCurrentSession(), [saveCurrentSession]);
+  const setSelectedSegment = useCallback(
+    (tabId: string, id: string | null) =>
+      updateTab(tabId, (e) => ({ ...e, selectedSegmentId: id })),
+    [updateTab]
+  );
 
-  /** Fork the current edits into a new named session, leaving the original. */
-  const saveAsVariation = useCallback((name: string) => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    const newId = makeId();
-    const now = Date.now();
-    setEditor((e) => {
-      if (!e.source) return e;
-      const forked = { ...e, sessionId: newId, createdAt: now, title: trimmed };
-      const session = buildSession({
-        id: newId,
-        createdAt: now,
-        title: trimmed,
-        source: e.source,
-        segments: e.segments,
-        groups: e.groups,
-        outputName: `${trimmed}.mp4`,
+  const markStart = useCallback(
+    (tabId: string, time: number) => {
+      const id = makeId();
+      updateTab(tabId, (e) => {
+        if (e.openSegmentId) {
+          return {
+            ...e,
+            segments: e.segments.map((s) =>
+              s.id === e.openSegmentId
+                ? { ...s, start: time, end: Math.max(s.end, time + MIN_SEGMENT) }
+                : s
+            ),
+          };
+        }
+        const prev = e.segments[e.segments.length - 1];
+        const groupId = prev ? prev.groupId : e.activeGroupId;
+        const newSeg: Segment = { id, start: time, end: time + MIN_SEGMENT, groupId: groupId ?? null };
+        return { ...e, segments: [...e.segments, newSeg], openSegmentId: id, selectedSegmentId: id };
       });
-      setHistory(upsertSession(session));
-      return { ...forked, savedSnapshot: serializeForSave(forked) };
-    });
-  }, []);
+    },
+    [updateTab]
+  );
 
+  const markEnd = useCallback(
+    (tabId: string, time: number) =>
+      updateTab(tabId, (e) => {
+        if (e.openSegmentId) {
+          const openId = e.openSegmentId;
+          return {
+            ...e,
+            segments: e.segments.map((s) =>
+              s.id === openId ? { ...s, end: Math.max(time, s.start + MIN_SEGMENT) } : s
+            ),
+            openSegmentId: null,
+            lastClosedSegmentId: openId,
+            selectedSegmentId: openId,
+          };
+        }
+        if (e.lastClosedSegmentId) {
+          const lastId = e.lastClosedSegmentId;
+          return {
+            ...e,
+            segments: e.segments.map((s) =>
+              s.id === lastId ? { ...s, end: Math.max(time, s.start + MIN_SEGMENT) } : s
+            ),
+            selectedSegmentId: lastId,
+          };
+        }
+        return e;
+      }),
+    [updateTab]
+  );
+
+  const addGroup = useCallback(
+    (tabId: string, name?: string) => {
+      const id = makeId();
+      updateTab(tabId, (e) => {
+        const group: Group = {
+          id,
+          name: name?.trim() || `Group ${e.groups.length + 1}`,
+          color: nextGroupColor(e.groups),
+        };
+        return { ...e, groups: [...e.groups, group], activeGroupId: id };
+      });
+      return id;
+    },
+    [updateTab]
+  );
+
+  const renameGroup = useCallback(
+    (tabId: string, id: string, name: string) =>
+      updateTab(tabId, (e) => ({
+        ...e,
+        groups: e.groups.map((g) => (g.id === id ? { ...g, name } : g)),
+      })),
+    [updateTab]
+  );
+
+  const removeGroup = useCallback(
+    (tabId: string, id: string) =>
+      updateTab(tabId, (e) => ({
+        ...e,
+        groups: e.groups.filter((g) => g.id !== id),
+        segments: e.segments.map((s) => (s.groupId === id ? { ...s, groupId: null } : s)),
+        activeGroupId: e.activeGroupId === id ? null : e.activeGroupId,
+      })),
+    [updateTab]
+  );
+
+  const setActiveGroup = useCallback(
+    (tabId: string, id: string | null) =>
+      updateTab(tabId, (e) => ({ ...e, activeGroupId: id })),
+    [updateTab]
+  );
+
+  const saveProject = useCallback(
+    (tabId: string) => {
+      updateTab(tabId, (e) => {
+        if (!e.source) return e;
+        const title = e.title.trim() || e.source.name;
+        const session = buildSession({
+          id: e.sessionId,
+          createdAt: e.createdAt,
+          title,
+          source: e.source,
+          segments: e.segments,
+          groups: e.groups,
+          outputName: `${title}.mp4`,
+        });
+        setHistory(upsertSession(session));
+        const saved = { ...e, title };
+        return { ...saved, savedSnapshot: serializeForSave(saved) };
+      });
+    },
+    [updateTab]
+  );
+
+  const saveAsVariation = useCallback(
+    (tabId: string, name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      const newId = makeId();
+      const now = Date.now();
+      updateTab(tabId, (e) => {
+        if (!e.source) return e;
+        const forked = { ...e, sessionId: newId, createdAt: now, title: trimmed };
+        const session = buildSession({
+          id: newId,
+          createdAt: now,
+          title: trimmed,
+          source: e.source,
+          segments: e.segments,
+          groups: e.groups,
+          outputName: `${trimmed}.mp4`,
+        });
+        setHistory(upsertSession(session));
+        return { ...forked, savedSnapshot: serializeForSave(forked) };
+      });
+    },
+    [updateTab]
+  );
+
+  // ---- History ----
   const openSession = useCallback((session: ClipSession) => {
-    setEditor((prev) => {
-      const keepFile =
-        prev.file &&
-        prev.source &&
-        prev.source.name === session.source.name &&
-        prev.source.size === session.source.size
-          ? prev.file
-          : null;
-      const opened: EditorState = {
-        sessionId: session.id,
-        createdAt: session.createdAt,
-        title: session.title,
-        file: keepFile,
-        source: session.source,
-        groups: (session.groups ?? []).map((g) => ({ ...g })),
-        segments: session.segments.map((s) => ({
-          id: makeId(),
-          start: s.start,
-          end: s.end,
-          groupId: s.groupId ?? null,
-        })),
-        activeGroupId: null,
-        selectedSegmentId: null,
-        openSegmentId: null,
-        lastClosedSegmentId: null,
-        savedSnapshot: null,
-      };
-      // Snapshot the opened state so edits made afterwards register as dirty.
-      return { ...opened, savedSnapshot: serializeForSave(opened) };
-    });
+    // Open a saved session in its own new tab, preserving other open work.
+    const opened: EditorState = {
+      tabId: makeId(),
+      sessionId: session.id,
+      createdAt: session.createdAt,
+      title: session.title,
+      file: null,
+      source: session.source,
+      groups: (session.groups ?? []).map((g) => ({ ...g })),
+      segments: session.segments.map((s) => ({
+        id: makeId(),
+        start: s.start,
+        end: s.end,
+        groupId: s.groupId ?? null,
+      })),
+      activeGroupId: null,
+      selectedSegmentId: null,
+      openSegmentId: null,
+      lastClosedSegmentId: null,
+      savedSnapshot: null,
+    };
+    const withSnapshot = { ...opened, savedSnapshot: serializeForSave(opened) };
+    setTabs((ts) => [...ts, withSnapshot]);
+    setActiveTabId(withSnapshot.tabId);
     setView('editor');
   }, []);
 
@@ -431,18 +516,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setHistory(deleteFromStore(id));
   }, []);
 
-  const needsReselect = editor.source !== null && editor.file === null;
-  const existsInHistory = history.some((s) => s.id === editor.sessionId);
-  const isDirty =
-    editor.savedSnapshot === null
-      ? editor.source !== null && (editor.segments.length > 0 || editor.title.trim() !== '')
-      : serializeForSave(editor) !== editor.savedSnapshot;
-
-  const value = useMemo<AppContextValue>(
+  const mutators = useMemo<TabMutators>(
     () => ({
-      view,
-      setView,
-      editor,
       setTitle,
       setSourceFile,
       clearSource,
@@ -459,20 +534,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       renameGroup,
       removeGroup,
       setActiveGroup,
-      resetEditor,
-      history,
-      saveCurrentSession,
       saveProject,
       saveAsVariation,
-      openSession,
-      deleteSession,
-      needsReselect,
-      isDirty,
-      existsInHistory,
     }),
     [
-      view,
-      editor,
       setTitle,
       setSourceFile,
       clearSource,
@@ -489,24 +554,101 @@ export function AppProvider({ children }: { children: ReactNode }) {
       renameGroup,
       removeGroup,
       setActiveGroup,
-      resetEditor,
-      history,
-      saveCurrentSession,
       saveProject,
       saveAsVariation,
-      openSession,
-      deleteSession,
-      needsReselect,
-      isDirty,
-      existsInHistory,
     ]
   );
 
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+  const raw = useMemo<RawContextValue>(
+    () => ({
+      view,
+      setView,
+      tabs,
+      activeTabId,
+      setActiveTab,
+      newTab,
+      closeTab,
+      history,
+      openSession,
+      deleteSession,
+      m: mutators,
+    }),
+    [
+      view,
+      tabs,
+      activeTabId,
+      setActiveTab,
+      newTab,
+      closeTab,
+      history,
+      openSession,
+      deleteSession,
+      mutators,
+    ]
+  );
+
+  return <RawContext.Provider value={raw}>{children}</RawContext.Provider>;
 }
 
 export function useApp(): AppContextValue {
-  const ctx = useContext(AppContext);
-  if (!ctx) throw new Error('useApp must be used within an AppProvider');
-  return ctx;
+  const raw = useContext(RawContext);
+  if (!raw) throw new Error('useApp must be used within an AppProvider');
+  const scoped = useContext(TabScope);
+  const tabId = scoped ?? raw.activeTabId;
+  const editor =
+    raw.tabs.find((t) => t.tabId === tabId) ??
+    raw.tabs.find((t) => t.tabId === raw.activeTabId) ??
+    raw.tabs[0];
+  const { m } = raw;
+
+  const tabsMeta = useMemo<TabMeta[]>(
+    () =>
+      raw.tabs.map((t) => ({
+        tabId: t.tabId,
+        title: t.title.trim() || (t.source ? t.source.name : 'Untitled'),
+        isDirty: computeDirty(t),
+        hasSource: t.source !== null,
+      })),
+    [raw.tabs]
+  );
+
+  return useMemo<AppContextValue>(
+    () => ({
+      view: raw.view,
+      setView: raw.setView,
+      tabs: tabsMeta,
+      activeTabId: raw.activeTabId,
+      tabId: editor.tabId,
+      setActiveTab: raw.setActiveTab,
+      newTab: raw.newTab,
+      closeTab: raw.closeTab,
+      editor,
+      setTitle: (title) => m.setTitle(editor.tabId, title),
+      setSourceFile: (file, source) => m.setSourceFile(editor.tabId, file, source),
+      clearSource: () => m.clearSource(editor.tabId),
+      addSegment: (segment) => m.addSegment(editor.tabId, segment),
+      updateSegment: (id, patch) => m.updateSegment(editor.tabId, id, patch),
+      removeSegment: (id) => m.removeSegment(editor.tabId, id),
+      duplicateSegment: (id) => m.duplicateSegment(editor.tabId, id),
+      moveSegmentWithinGroup: (id, dir) => m.moveSegmentWithinGroup(editor.tabId, id, dir),
+      moveSegmentBefore: (dragId, targetId) =>
+        m.moveSegmentBefore(editor.tabId, dragId, targetId),
+      setSelectedSegment: (id) => m.setSelectedSegment(editor.tabId, id),
+      markStart: (time) => m.markStart(editor.tabId, time),
+      markEnd: (time) => m.markEnd(editor.tabId, time),
+      addGroup: (name) => m.addGroup(editor.tabId, name),
+      renameGroup: (id, name) => m.renameGroup(editor.tabId, id, name),
+      removeGroup: (id) => m.removeGroup(editor.tabId, id),
+      setActiveGroup: (id) => m.setActiveGroup(editor.tabId, id),
+      history: raw.history,
+      saveProject: () => m.saveProject(editor.tabId),
+      saveAsVariation: (name) => m.saveAsVariation(editor.tabId, name),
+      openSession: raw.openSession,
+      deleteSession: raw.deleteSession,
+      needsReselect: editor.source !== null && editor.file === null,
+      isDirty: computeDirty(editor),
+      existsInHistory: raw.history.some((s) => s.id === editor.sessionId),
+    }),
+    [raw, editor, tabsMeta, m]
+  );
 }

@@ -12,6 +12,8 @@ import { RenderPanel } from './RenderPanel';
 export function Editor() {
   const {
     editor,
+    tabId,
+    activeTabId,
     setTitle,
     markStart,
     markEnd,
@@ -20,6 +22,7 @@ export function Editor() {
     isDirty,
     existsInHistory,
   } = useApp();
+  const isActive = tabId === activeTabId;
   const videoRef = useRef<HTMLVideoElement>(null);
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
@@ -92,10 +95,20 @@ export function Editor() {
 
   const getCurrentTime = useCallback(() => videoRef.current?.currentTime ?? 0, []);
 
-  // Keyboard shortcuts: S marks a segment start, E marks the end. Active only
-  // when a video is loaded and focus isn't in a text field / control.
+  // Pause playback when this tab is switched away from, so a hidden tab's video
+  // doesn't keep playing.
   useEffect(() => {
-    if (!objectUrl) return;
+    if (!isActive) {
+      videoRef.current?.pause();
+      sequenceRef.current = null;
+      setPlayingKey(null);
+    }
+  }, [isActive]);
+
+  // Keyboard shortcuts: S marks a segment start, E marks the end. Active only
+  // for the focused tab, when a video is loaded and focus isn't in a control.
+  useEffect(() => {
+    if (!objectUrl || !isActive) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
       const el = e.target as HTMLElement | null;
@@ -119,7 +132,7 @@ export function Editor() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [objectUrl, markStart, markEnd]);
+  }, [objectUrl, isActive, markStart, markEnd]);
 
   const seekTo = useCallback((seconds: number) => {
     const video = videoRef.current;

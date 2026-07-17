@@ -3,7 +3,7 @@
 import { useApp } from '@/context/AppContext';
 
 export function Header() {
-  const { view, setView, history, resetEditor } = useApp();
+  const { view, setView, history, newTab } = useApp();
 
   return (
     <header className="sticky top-0 z-20 border-b border-white/10 bg-[#0b0d13]/80 backdrop-blur">
@@ -41,16 +41,8 @@ export function Header() {
             )}
           </button>
           {view === 'editor' && (
-            <button
-              onClick={() => {
-                if (confirm('Start a new clip session? Unsaved changes will be lost.')) {
-                  resetEditor();
-                }
-              }}
-              className="btn-ghost"
-              title="Start a fresh session"
-            >
-              New
+            <button onClick={newTab} className="btn-ghost" title="Open a new tab">
+              New tab
             </button>
           )}
         </nav>
