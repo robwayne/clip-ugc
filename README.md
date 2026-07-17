@@ -45,6 +45,12 @@ machine, and no server-side storage is required.
   spliced groups when available (fast).
 - **Cancel a splice** — stop an in-progress splice at any time; the ffmpeg worker
   is terminated and reloaded for the next run.
+- **Cut reuse (caching)** — every cut clip is kept in ffmpeg's memory keyed by
+  source + start + end, so an identical cut is reused across groups and repeated
+  splices instead of being re-encoded (splicing a group whose cuts already exist
+  is near-instant).
+- **Time estimate** — splicing shows a live ETA alongside the progress bar and
+  percentage.
 - **Save & variations** — save the current project to history at any time, or
   **save as variation** to fork the latest edits of a history-opened project into
   a new, differently named session, leaving the original intact.
@@ -76,6 +82,11 @@ Only the group you asked for is processed, so groups can be spliced and
 downloaded independently. The optional **Combine all groups** step stitches the
 already-spliced group videos together (stream copy) when they're available, and
 otherwise splices everything from the source.
+
+Cut clips are cached in ffmpeg's virtual filesystem (keyed by source + start +
+end, LRU-capped), so a cut that already exists — in another group or an earlier
+splice — is reused rather than re-encoded. The single ffmpeg worker is also
+guarded so two tabs can't splice into the same filesystem at once.
 
 ## Getting started
 

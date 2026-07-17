@@ -13,6 +13,37 @@ import { isValidSegment } from './groups';
 let ffmpegSingleton: FFmpeg | null = null;
 let loadPromise: Promise<FFmpeg> | null = null;
 
+// ---- Cut-clip cache ----
+// Encoded segment clips persist in ffmpeg's in-memory FS keyed by
+// source + start + end, so the same cut (even across different groups or
+// repeated splices) is reused instead of re-encoded. The cache lives as long as
+// the worker does; terminateFFmpeg() clears it because the FS is discarded.
+const MAX_CACHED_CLIPS = 240;
+const clipCache = new Map<string, string>(); // cacheKey -> FS filename (LRU order)
+let clipCounter = 0;
+let loadedSourceKey: string | null = null;
+let loadedInputName: string | null = null;
+// Guards the single shared worker so two tabs can't render into the same FS at
+// once (which would corrupt each other's clips).
+let renderBusy = false;
+
+/** Fingerprint a source File so cached clips are only reused for the same video. */
+function sourceKeyOf(file: File): string {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function clipCacheKey(sourceKey: string, start: number, end: number): string {
+  return `${sourceKey}:${start.toFixed(3)}:${end.toFixed(3)}`;
+}
+
+function resetCacheState(): void {
+  clipCache.clear();
+  clipCounter = 0;
+  loadedSourceKey = null;
+  loadedInputName = null;
+  renderBusy = false;
+}
+
 /** Load (once) and return a ready ffmpeg instance. */
 export async function getFFmpeg(onLog?: (msg: string) => void): Promise<FFmpeg> {
   if (ffmpegSingleton) return ffmpegSingleton;
@@ -60,6 +91,8 @@ export function terminateFFmpeg(): void {
   }
   ffmpegSingleton = null;
   loadPromise = null;
+  // The FS (and every cached clip) is gone with the worker.
+  resetCacheState();
 }
 
 /** Error thrown when a render is cancelled by the user. */
@@ -112,19 +145,21 @@ export async function renderSplice(
   }
 
   throwIfAborted();
+  if (renderBusy) {
+    throw new Error('Another splice is already running — wait for it to finish.');
+  }
+  renderBusy = true;
+
   const ffmpeg = await getFFmpeg(opts.onLog);
   const report = (ratio: number, stage: string) =>
     opts.onProgress?.({ ratio: Math.max(0, Math.min(1, ratio)), stage });
 
-  const inputExt = extensionFromName(file.name);
-  const inputName = `input.${inputExt}`;
+  const sourceKey = sourceKeyOf(file);
   const base = sanitizeBaseName(opts.outputBaseName ?? file.name);
   const label = sanitizeBaseName(opts.label ?? 'spliced');
 
-  const scratchFiles = new Set<string>([inputName]);
-
-  report(0.02, 'Loading source video…');
-  await ffmpeg.writeFile(inputName, await fetchFile(file));
+  // Scratch = only the throwaway concat list + output. Cached clips persist.
+  const scratchFiles = new Set<string>();
 
   // Reserve ~90% of the bar for clip extraction, the rest for the concat step.
   const clipShare = 0.9;
@@ -139,25 +174,52 @@ export async function renderSplice(
   ffmpeg.on('progress', progressHandler);
 
   try {
+    // Load the source once; reused across splices of the same video.
+    if (loadedSourceKey !== sourceKey || !loadedInputName) {
+      report(0.02, 'Loading source video…');
+      const inputName = `input.${extensionFromName(file.name)}`;
+      if (loadedInputName && loadedInputName !== inputName) {
+        try {
+          await ffmpeg.deleteFile(loadedInputName);
+        } catch {
+          /* ignore */
+        }
+      }
+      await ffmpeg.writeFile(inputName, await fetchFile(file));
+      loadedInputName = inputName;
+      loadedSourceKey = sourceKey;
+    }
+    const inputName = loadedInputName;
+
     const clipNames: string[] = [];
+    let reusedCount = 0;
     for (let i = 0; i < ordered.length; i++) {
       throwIfAborted();
       const seg = ordered[i];
       currentClipNumber = i + 1;
       clipBaseRatio = 0.05 + i * perClip;
-      const duration = seg.end - seg.start;
-      const clipName = `clip_${String(i).padStart(3, '0')}.mp4`;
-      scratchFiles.add(clipName);
+      const key = clipCacheKey(sourceKey, seg.start, seg.end);
+
+      const cached = clipCache.get(key);
+      if (cached) {
+        // Reuse the previously cut clip; mark it most-recently-used.
+        clipCache.delete(key);
+        clipCache.set(key, cached);
+        reusedCount++;
+        clipNames.push(cached);
+        report(clipBaseRatio + perClip * 0.999, `Reusing clip ${i + 1} of ${ordered.length}…`);
+        continue;
+      }
 
       report(clipBaseRatio, `Cutting clip ${i + 1} of ${ordered.length}…`);
-
+      const clipName = `cut_${clipCounter++}.mp4`;
       await ffmpeg.exec([
         '-ss',
         seg.start.toFixed(3),
         '-i',
         inputName,
         '-t',
-        duration.toFixed(3),
+        (seg.end - seg.start).toFixed(3),
         '-c:v',
         'libx264',
         '-preset',
@@ -180,14 +242,16 @@ export async function renderSplice(
         '+faststart',
         clipName,
       ]);
+      clipCache.set(key, clipName);
       clipNames.push(clipName);
+      await evictCache(ffmpeg);
     }
 
     ffmpeg.off('progress', progressHandler);
     throwIfAborted();
-    report(0.95, 'Stitching clips…');
+    report(0.95, reusedCount === ordered.length ? 'Stitching cached clips…' : 'Stitching clips…');
 
-    const outName = 'out.mp4';
+    const outName = `out_${clipCounter++}.mp4`;
     scratchFiles.add(outName);
     await concatFiles(ffmpeg, clipNames, outName, scratchFiles);
 
@@ -203,9 +267,26 @@ export async function renderSplice(
       duration,
     };
   } finally {
+    renderBusy = false;
     if (!signal?.aborted) {
       ffmpeg.off('progress', progressHandler);
+      // Delete only scratch (list + output); cached clips stay for reuse.
       await cleanup(ffmpeg, scratchFiles);
+    }
+  }
+}
+
+/** Evict least-recently-used cached clips over the cap. */
+async function evictCache(ffmpeg: FFmpeg): Promise<void> {
+  while (clipCache.size > MAX_CACHED_CLIPS) {
+    const oldestKey = clipCache.keys().next().value as string | undefined;
+    if (oldestKey === undefined) break;
+    const name = clipCache.get(oldestKey)!;
+    clipCache.delete(oldestKey);
+    try {
+      await ffmpeg.deleteFile(name);
+    } catch {
+      /* ignore */
     }
   }
 }
@@ -233,6 +314,11 @@ export async function concatRenderedVideos(
   if (parts.length === 0) throw new Error('Nothing to combine.');
 
   throwIfAborted();
+  if (renderBusy) {
+    throw new Error('Another splice is already running — wait for it to finish.');
+  }
+  renderBusy = true;
+
   const ffmpeg = await getFFmpeg(opts.onLog);
   const report = (ratio: number, stage: string) =>
     opts.onProgress?.({ ratio: Math.max(0, Math.min(1, ratio)), stage });
@@ -246,7 +332,7 @@ export async function concatRenderedVideos(
     const names: string[] = [];
     for (let i = 0; i < parts.length; i++) {
       throwIfAborted();
-      const name = `part_${String(i).padStart(3, '0')}.mp4`;
+      const name = `part_${clipCounter++}.mp4`;
       await ffmpeg.writeFile(name, await fetchFile(parts[i].blob));
       scratchFiles.add(name);
       names.push(name);
@@ -254,7 +340,7 @@ export async function concatRenderedVideos(
 
     throwIfAborted();
     report(0.5, 'Combining…');
-    const outName = 'combined.mp4';
+    const outName = `combined_${clipCounter++}.mp4`;
     scratchFiles.add(outName);
     await concatFiles(ffmpeg, names, outName, scratchFiles);
 
@@ -268,6 +354,7 @@ export async function concatRenderedVideos(
       duration: opts.durationSeconds ?? 0,
     };
   } finally {
+    renderBusy = false;
     if (!signal?.aborted) await cleanup(ffmpeg, scratchFiles);
   }
 }

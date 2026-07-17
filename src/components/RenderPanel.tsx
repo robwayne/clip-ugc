@@ -22,6 +22,8 @@ interface RenderState {
   error: string | null;
   /** Signature of the segments this result was rendered from (for staleness). */
   signature: string;
+  /** Estimated seconds remaining, or null while it can't be estimated yet. */
+  etaSeconds: number | null;
 }
 
 const FINAL_KEY = '__final__';
@@ -40,7 +42,16 @@ const idleState = (): RenderState => ({
   result: null,
   error: null,
   signature: '',
+  etaSeconds: null,
 });
+
+function formatEta(seconds: number): string {
+  if (seconds <= 1) return 'almost done';
+  if (seconds < 60) return `~${Math.round(seconds)}s left`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `~${m}m ${s}s left`;
+}
 
 export function RenderPanel() {
   const { editor } = useApp();
@@ -100,10 +111,29 @@ export function RenderPanel() {
         error: null,
         result: null,
         signature,
+        etaSeconds: null,
       });
+
+      // Estimate remaining time from elapsed time and progress, smoothed so it
+      // doesn't jump around (e.g. when cached clips complete instantly).
+      const startedAt = performance.now();
+      let etaEma: number | null = null;
+      const onProgress = (p: RenderProgress) => {
+        const elapsed = (performance.now() - startedAt) / 1000;
+        let eta: number | null = null;
+        if (p.ratio >= 0.999) {
+          eta = 0;
+        } else if (p.ratio > 0.02 && elapsed > 0.3) {
+          const raw = (elapsed * (1 - p.ratio)) / p.ratio;
+          etaEma = etaEma == null ? raw : etaEma * 0.5 + raw * 0.5;
+          eta = etaEma;
+        }
+        patch(key, { progress: p, etaSeconds: eta });
+      };
+
       try {
-        const result = await produce(controller.signal, (p) => patch(key, { progress: p }));
-        patch(key, { phase: 'done', result, progress: { ratio: 1, stage: 'Done' } });
+        const result = await produce(controller.signal, onProgress);
+        patch(key, { phase: 'done', result, progress: { ratio: 1, stage: 'Done' }, etaSeconds: 0 });
       } catch (err) {
         if (err instanceof RenderCancelledError || controller.signal.aborted) {
           patch(key, { phase: 'cancelled', result: null });
@@ -319,7 +349,12 @@ function GroupSpliceCard({
         <div className="mt-3">
           <div className="mb-1 flex justify-between text-xs text-white/60">
             <span>{state.progress.stage}</span>
-            <span>{Math.round(state.progress.ratio * 100)}%</span>
+            <span>
+              {Math.round(state.progress.ratio * 100)}%
+              {state.etaSeconds != null && (
+                <span className="ml-2 text-white/40">{formatEta(state.etaSeconds)}</span>
+              )}
+            </span>
           </div>
           <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
             <div
