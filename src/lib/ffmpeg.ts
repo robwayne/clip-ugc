@@ -120,10 +120,11 @@ export async function renderProject(
   };
   ffmpeg.on('progress', progressHandler);
 
-  // Map each ordered segment to its produced clip filename + blob.
+  // Map each ordered segment to its produced clip filename. These clips live
+  // only in ffmpeg's in-memory FS as inputs to the concat step and are deleted
+  // afterwards — they are never read back into downloadable blobs.
   const clipFileFor = new Map<Segment, string>();
   const result: RenderResult = {
-    clips: [],
     buckets: [],
     final: { blob: new Blob(), url: '', filename: '', duration: 0 },
   };
@@ -196,18 +197,8 @@ export async function renderProject(
         clipName,
       ]);
 
+      // Keep the clip in the FS for concatenation; do not read it back.
       clipFileFor.set(seg, clipName);
-      const clipData = await ffmpeg.readFile(clipName);
-      const clipBlob = new Blob([toArrayBuffer(clipData)], { type: 'video/mp4' });
-      result.clips.push({
-        index: i,
-        start: seg.start,
-        end: seg.end,
-        groupId: seg.groupId,
-        blob: clipBlob,
-        url: URL.createObjectURL(clipBlob),
-        filename: `${base}_clip${i + 1}.mp4`,
-      });
     }
 
     const multipleBuckets = buckets.length > 1;
@@ -293,7 +284,6 @@ function toArrayBuffer(data: Uint8Array | string): ArrayBuffer {
 /** Release object URLs held by a render result. */
 export function revokeRenderResult(result: RenderResult | null): void {
   if (!result) return;
-  for (const clip of result.clips) URL.revokeObjectURL(clip.url);
   for (const bucket of result.buckets) URL.revokeObjectURL(bucket.url);
   if (result.final.url) URL.revokeObjectURL(result.final.url);
 }

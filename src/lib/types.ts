@@ -40,17 +40,6 @@ export interface ClipSession {
   outputName: string;
 }
 
-/** A produced clip (single trimmed segment) available for optional download. */
-export interface RenderedClip {
-  index: number;
-  start: number;
-  end: number;
-  groupId: string | null;
-  blob: Blob;
-  url: string;
-  filename: string;
-}
-
 /** A produced splice of one bucket (group, or the ungrouped set). */
 export interface RenderedBucket {
   groupId: string | null;
@@ -65,9 +54,7 @@ export interface RenderedBucket {
 
 /** The full result of a render. */
 export interface RenderResult {
-  /** One normalized clip per rendered segment. */
-  clips: RenderedClip[];
-  /** One splice per bucket (group + trailing ungrouped). */
+  /** One splice per bucket (group + trailing ungrouped), named by group. */
   buckets: RenderedBucket[];
   /** The single stitched output: all buckets concatenated in order. */
   final: {

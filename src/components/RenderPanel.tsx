@@ -106,15 +106,44 @@ export function RenderPanel() {
 }
 
 function Results({ result }: { result: RenderResult }) {
-  const hasGroups = result.buckets.length > 1;
+  const multipleGroups = result.buckets.length > 1;
+
+  // Single bucket: the final video IS that bucket. Name it by the group when it
+  // is a real group; otherwise it's the flat "spliced" output.
+  if (!multipleGroups) {
+    const bucket = result.buckets[0];
+    const isGroup = bucket?.groupId != null;
+    const url = bucket ? bucket.url : result.final.url;
+    const filename = isGroup ? bucket.filename : result.final.filename;
+    return (
+      <div className="mt-6 space-y-4 border-t border-white/10 pt-5">
+        <div className="mb-1 flex items-center gap-2">
+          <span className="text-green-400">✓</span>
+          <h3 className="text-sm font-semibold">
+            {isGroup ? `${bucket.name} splice` : 'Spliced video'}
+          </h3>
+          <span className="text-xs text-white/40">
+            {formatDuration(result.final.duration)} · {formatBytes(result.final.blob.size)}
+          </span>
+        </div>
+        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+        <video src={url} controls className="w-full rounded-lg bg-black" />
+        <a href={url} download={filename} className="btn-primary">
+          ⬇ Download {isGroup ? `${bucket.name}` : 'spliced video'}
+        </a>
+      </div>
+    );
+  }
+
   return (
     <div className="mt-6 space-y-6 border-t border-white/10 pt-5">
       <div>
         <div className="mb-2 flex items-center gap-2">
           <span className="text-green-400">✓</span>
-          <h3 className="text-sm font-semibold">Final spliced video</h3>
+          <h3 className="text-sm font-semibold">Final combined video</h3>
           <span className="text-xs text-white/40">
-            {formatDuration(result.final.duration)} · {formatBytes(result.final.blob.size)}
+            all groups in order · {formatDuration(result.final.duration)} ·{' '}
+            {formatBytes(result.final.blob.size)}
           </span>
         </div>
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
@@ -124,73 +153,43 @@ function Results({ result }: { result: RenderResult }) {
         </a>
       </div>
 
-      {hasGroups && (
-        <div>
-          <h3 className="mb-2 text-sm font-semibold">
-            Group splices{' '}
-            <span className="text-xs font-normal text-white/40">
-              (each group stitched on its own)
-            </span>
-          </h3>
-          <div className="grid gap-3 sm:grid-cols-2">
-            {result.buckets.map((bucket) => (
-              <div
-                key={bucket.groupId ?? '__ungrouped__'}
-                className="rounded-lg border border-white/10 bg-white/[0.02] p-3"
-              >
-                <div className="mb-2 flex items-center gap-2">
-                  <span
-                    className="h-3 w-3 rounded-full"
-                    style={{ background: bucket.color ?? '#64748b' }}
-                  />
-                  <span className="text-sm font-medium">{bucket.name}</span>
-                  <span className="text-xs text-white/40">
-                    {bucket.segmentCount} · {formatDuration(bucket.duration)}
-                  </span>
-                </div>
-                {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                <video src={bucket.url} controls className="w-full rounded bg-black" />
-                <a
-                  href={bucket.url}
-                  download={bucket.filename}
-                  className="btn-secondary mt-2 w-full text-xs"
-                >
-                  ⬇ Download {bucket.name} splice
-                </a>
+      <div>
+        <h3 className="mb-2 text-sm font-semibold">
+          Group downloads{' '}
+          <span className="text-xs font-normal text-white/40">
+            (each group spliced on its own, saved by group name)
+          </span>
+        </h3>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {result.buckets.map((bucket) => (
+            <div
+              key={bucket.groupId ?? '__ungrouped__'}
+              className="rounded-lg border border-white/10 bg-white/[0.02] p-3"
+            >
+              <div className="mb-2 flex items-center gap-2">
+                <span
+                  className="h-3 w-3 rounded-full"
+                  style={{ background: bucket.color ?? '#64748b' }}
+                />
+                <span className="text-sm font-medium">{bucket.name}</span>
+                <span className="text-xs text-white/40">
+                  {bucket.segmentCount} · {formatDuration(bucket.duration)} ·{' '}
+                  {formatBytes(bucket.blob.size)}
+                </span>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {result.clips.length > 1 && (
-        <div>
-          <h3 className="mb-2 text-sm font-semibold">
-            Individual clips{' '}
-            <span className="text-xs font-normal text-white/40">(optional downloads)</span>
-          </h3>
-          <ul className="grid gap-2 sm:grid-cols-2">
-            {result.clips.map((clip) => (
-              <li
-                key={clip.index}
-                className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2"
+              {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+              <video src={bucket.url} controls className="w-full rounded bg-black" />
+              <a
+                href={bucket.url}
+                download={bucket.filename}
+                className="btn-secondary mt-2 w-full text-xs"
               >
-                <div className="min-w-0 text-xs">
-                  <div className="truncate font-medium">Clip {clip.index + 1}</div>
-                  <div className="text-white/40">{formatDuration(clip.end - clip.start)}</div>
-                </div>
-                <a
-                  href={clip.url}
-                  download={clip.filename}
-                  className="btn-secondary shrink-0 px-3 py-1.5 text-xs"
-                >
-                  ⬇
-                </a>
-              </li>
-            ))}
-          </ul>
+                ⬇ Download “{bucket.name}”
+              </a>
+            </div>
+          ))}
         </div>
-      )}
+      </div>
     </div>
   );
 }

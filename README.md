@@ -2,7 +2,7 @@
 
 A browser-based video **clipping and splicing pipeline**. Upload a source video,
 enter timestamp ranges, and the app cuts those ranges out and stitches them into
-a single output video — with each individual clip also available to download.
+a single output video — with each group also downloadable as its own splice.
 
 All processing runs **client-side in your browser** using
 [`ffmpeg.wasm`](https://ffmpegwasm.netlify.app/). Your videos never leave your
@@ -31,8 +31,9 @@ machine, and no server-side storage is required.
   Hit **Play group** to preview a group's clips back-to-back — as if already
   concatenated — or **Play all** to preview the whole final splice, without
   rendering anything.
-- **Optional per-clip downloads** — every segment is also produced as its own
-  file, so you can grab individual clips as well as the group and final splices.
+- **Group & final downloads** — download each group as its own spliced video
+  (saved using the group name), and, when there are multiple groups, the final
+  combined video of all groups in order.
 - **Works with standard formats** — MP4, MKV, MOV, WebM, AVI and more. Every clip
   is normalized to H.264/AAC MP4 so the pieces splice together cleanly regardless
   of the source container.
@@ -52,10 +53,12 @@ For each session the pipeline:
 
 1. Loads the uploaded file into ffmpeg's in-memory filesystem.
 2. Re-encodes each `[start, end]` range into a normalized MP4 clip (frame-accurate
-   cuts, consistent codec parameters). These are the optional per-clip downloads.
+   cuts, consistent codec parameters). These clips live only in ffmpeg's virtual
+   filesystem as concat inputs and are deleted at the end — they are never read
+   back into downloadable files.
 3. For each bucket — each group in order, then a trailing "Ungrouped" bucket —
    concatenates its clips with the ffmpeg concat demuxer using stream copy
-   (fast, lossless) into that group's splice.
+   (fast, lossless) into that group's splice, saved by the group name.
 4. Concatenates every clip, in bucket order, into the single final output. With
    only one bucket this is just the flat splice of all segments.
 
