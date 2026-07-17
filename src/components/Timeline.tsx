@@ -136,7 +136,7 @@ export function Timeline({ duration, currentTime, onSeek, sourceId }: TimelinePr
         // Begin creating a new segment; continue as an end-resize.
         const start = Math.min(d.anchor, t);
         const end = Math.max(d.anchor, t);
-        const id = addSegment({ start, end: Math.max(end, start + MIN_DURATION) });
+        const id = addSegment({ start, end: Math.max(end, start + MIN_DURATION), sourceId });
         dragRef.current = {
           kind: 'resize',
           pointerId: d.pointerId,
@@ -309,7 +309,9 @@ export function Timeline({ duration, currentTime, onSeek, sourceId }: TimelinePr
         </span>
         <button
           className="btn-ghost px-2 py-1 text-xs"
-          onClick={() => addSegment({ start: currentTime, end: Math.min(duration, currentTime + 5) })}
+          onClick={() =>
+            addSegment({ start: currentTime, end: Math.min(duration, currentTime + 5), sourceId })
+          }
         >
           + Add at playhead
         </button>

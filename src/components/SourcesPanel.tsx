@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useRef, useState } from 'react';
-import { useApp } from '@/context/AppContext';
+import { MAX_SOURCES, useApp } from '@/context/AppContext';
 import type { EditorSource } from '@/context/AppContext';
 import { buildSourceMeta, matchesSource, probeDuration } from '@/lib/media';
 import { formatBytes, formatDuration } from '@/lib/time';
@@ -26,16 +26,22 @@ export function SourcesPanel() {
     [addSource]
   );
 
+  const remaining = MAX_SOURCES - sources.length;
+  const atCap = remaining <= 0;
+
+  const addFiles = (files: File[]) => {
+    files.slice(0, Math.max(0, MAX_SOURCES - sources.length)).forEach((f) => void handleAdd(f));
+  };
+
   const onAddInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    files.forEach((f) => void handleAdd(f));
+    addFiles(Array.from(e.target.files ?? []));
     e.target.value = '';
   };
 
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
-    Array.from(e.dataTransfer.files ?? []).forEach((f) => void handleAdd(f));
+    addFiles(Array.from(e.dataTransfer.files ?? []));
   };
 
   if (sources.length === 0) {
@@ -70,10 +76,12 @@ export function SourcesPanel() {
   return (
     <div className="card">
       <div className="mb-3">
-        <h2 className="text-sm font-semibold">Source videos</h2>
+        <h2 className="text-sm font-semibold">
+          Source videos <span className="text-xs font-normal text-white/40">({sources.length}/{MAX_SOURCES})</span>
+        </h2>
         <p className="mt-0.5 text-xs text-white/50">
-          Segments are cut from the active source. Add multiple videos to combine clips from
-          different sources — each segment can pick its own.
+          Segments are cut from the active source. Add up to {MAX_SOURCES} videos to combine clips
+          from different sources — each segment can pick its own.
         </p>
       </div>
 
@@ -96,10 +104,16 @@ export function SourcesPanel() {
         ))}
       </div>
 
-      <div className="mt-3">
-        <button className="btn-secondary" onClick={() => addInputRef.current?.click()}>
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          className="btn-secondary"
+          onClick={() => addInputRef.current?.click()}
+          disabled={atCap}
+          title={atCap ? `Maximum ${MAX_SOURCES} source videos` : undefined}
+        >
           + Add source video
         </button>
+        {atCap && <span className="text-xs text-white/40">Maximum of {MAX_SOURCES} reached</span>}
         <input ref={addInputRef} type="file" accept={ACCEPT} multiple className="hidden" onChange={onAddInput} />
       </div>
     </div>

@@ -102,6 +102,8 @@ function emptyEditor(): EditorState {
 }
 
 const MIN_SEGMENT = 0.05;
+/** Maximum number of source videos allowed per session. */
+export const MAX_SOURCES = 4;
 
 /** The public surface, resolved to a specific tab by useApp(). */
 interface AppContextValue {
@@ -244,12 +246,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const addSource = useCallback(
     (tabId: string, file: File, meta: SourceMeta) => {
       const id = makeId();
-      updateTab(tabId, (e) => ({
-        ...e,
-        sources: [...e.sources, { id, meta, file }],
-        activeSourceId: id,
-        title: e.title.trim() === '' && e.sources.length === 0 ? meta.name : e.title,
-      }));
+      updateTab(tabId, (e) => {
+        if (e.sources.length >= MAX_SOURCES) return e; // cap reached
+        return {
+          ...e,
+          sources: [...e.sources, { id, meta, file }],
+          activeSourceId: id,
+          title: e.title.trim() === '' && e.sources.length === 0 ? meta.name : e.title,
+        };
+      });
       return id;
     },
     [updateTab]

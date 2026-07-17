@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { SourcesPanel } from './SourcesPanel';
-import { Preview } from './Preview';
+import { SourcePlayers } from './SourcePlayers';
 import { Timeline } from './Timeline';
 import { GroupsBar } from './GroupsBar';
 import { SegmentList } from './SegmentList';
@@ -21,6 +21,7 @@ export function Editor() {
     editor,
     tabId,
     activeTabId,
+    setActiveSource,
     setTitle,
     markStart,
     markEnd,
@@ -30,8 +31,19 @@ export function Editor() {
     existsInHistory,
   } = useApp();
   const isActive = tabId === activeTabId;
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [currentTime, setCurrentTime] = useState(0);
+
+  // One <video> element per source, registered by the players grid.
+  const elsRef = useRef<Map<string, HTMLVideoElement>>(new Map());
+  const registerEl = useCallback((id: string, el: HTMLVideoElement | null) => {
+    if (el) elsRef.current.set(id, el);
+    else elsRef.current.delete(id);
+  }, []);
+  const getEl = (id: string | null) => (id ? elsRef.current.get(id) ?? null : null);
+  const pauseAllExcept = (keepId: string | null) => {
+    elsRef.current.forEach((el, id) => {
+      if (id !== keepId) el.pause();
+    });
+  };
 
   // ---- Per-source object URLs ----
   const [urls, setUrls] = useState<Record<string, string>>({});
@@ -48,102 +60,71 @@ export function Editor() {
     };
   }, [editor.sources]);
 
-  // ---- Which source is shown in the player (follows the active source when
-  //      idle; the playback sequence drives it across sources) ----
-  const [displaySourceId, setDisplaySourceId] = useState<string | null>(editor.activeSourceId);
-  const displayRef = useRef(displaySourceId);
+  // The source the timeline + playhead follow: the active source when idle, or
+  // the source currently playing during a cross-source sequence.
+  const [focusedSourceId, setFocusedSourceId] = useState<string | null>(editor.activeSourceId);
+  const focusedRef = useRef(focusedSourceId);
   useEffect(() => {
-    displayRef.current = displaySourceId;
-  }, [displaySourceId]);
+    focusedRef.current = focusedSourceId;
+  }, [focusedSourceId]);
+  const [currentTime, setCurrentTime] = useState(0);
 
-  // ---- Playback sequence (back-to-back ranges across sources, optional loop) ----
+  // ---- Playback sequence across per-source players ----
   const sequenceRef = useRef<{ ranges: PlayRange[]; i: number; loop: boolean } | null>(null);
-  const switchingRef = useRef(false);
-  const pendingSeekRef = useRef<number | null>(null);
   const [playingKey, setPlayingKey] = useState<string | null>(null);
   const [loopingKey, setLoopingKey] = useState<string | null>(null);
 
-  // When idle, keep the displayed source in sync with the active source.
+  // When idle, the focused source tracks the active source.
   useEffect(() => {
     if (!sequenceRef.current) {
-      setDisplaySourceId(editor.activeSourceId);
-      setCurrentTime(0);
+      setFocusedSourceId(editor.activeSourceId);
+      setCurrentTime(getEl(editor.activeSourceId)?.currentTime ?? 0);
     }
   }, [editor.activeSourceId]);
 
-  const displayUrl = displaySourceId ? urls[displaySourceId] ?? null : null;
-  const displaySource = editor.sources.find((s) => s.id === displaySourceId) ?? null;
-  const duration = displaySource?.meta.duration ?? null;
+  const onTime = useCallback((id: string, t: number) => {
+    if (id === focusedRef.current) setCurrentTime(t);
+  }, []);
 
   const enterRange = useCallback((idx: number) => {
     const seq = sequenceRef.current;
-    const video = videoRef.current;
-    if (!seq || !video) return;
+    if (!seq) return;
     seq.i = idx;
     const r = seq.ranges[idx];
-    if (displayRef.current !== r.sourceId) {
-      // Switch the player to this range's source; seek+play once it loads.
-      switchingRef.current = true;
-      pendingSeekRef.current = r.start;
-      setDisplaySourceId(r.sourceId);
-    } else {
-      video.currentTime = Math.max(0, r.start);
-      void video.play().catch(() => {});
-    }
+    const el = elsRef.current.get(r.sourceId);
+    pauseAllExcept(r.sourceId);
+    setFocusedSourceId(r.sourceId);
+    if (!el) return;
+    el.currentTime = Math.max(0, r.start);
+    void el.play().catch(() => {});
   }, []);
 
-  // Player event wiring (re-bound when the displayed source changes).
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    const onTime = () => setCurrentTime(video.currentTime);
-    const onLoaded = () => {
-      if (pendingSeekRef.current != null) {
-        video.currentTime = Math.max(0, pendingSeekRef.current);
-        pendingSeekRef.current = null;
-        if (sequenceRef.current) void video.play().catch(() => {});
-        switchingRef.current = false;
-      }
-    };
-    const onEnded = () => {
-      sequenceRef.current = null;
-      setPlayingKey(null);
-      setLoopingKey(null);
-    };
-    video.addEventListener('timeupdate', onTime);
-    video.addEventListener('loadeddata', onLoaded);
-    video.addEventListener('ended', onEnded);
-    return () => {
-      video.removeEventListener('timeupdate', onTime);
-      video.removeEventListener('loadeddata', onLoaded);
-      video.removeEventListener('ended', onEnded);
-    };
-  }, [displayUrl]);
-
-  // Drive sequential playback with rAF for tight clip boundaries.
+  // rAF loop advances the sequence with tight clip boundaries.
   useEffect(() => {
     if (!playingKey) return;
     let raf = 0;
     const tick = () => {
-      const video = videoRef.current;
       const seq = sequenceRef.current;
-      if (video && seq && !switchingRef.current) {
-        const range = seq.ranges[seq.i];
-        if (range && video.currentTime >= range.end - 0.01) {
-          const next = seq.i + 1;
-          if (next < seq.ranges.length) {
-            enterRange(next);
-          } else if (seq.loop) {
-            enterRange(0);
-          } else {
-            video.pause();
-            sequenceRef.current = null;
-            setPlayingKey(null);
-            setLoopingKey(null);
-            return;
+      if (seq) {
+        const r = seq.ranges[seq.i];
+        const el = elsRef.current.get(r.sourceId);
+        if (el) {
+          if (el.currentTime >= r.end - 0.01) {
+            const next = seq.i + 1;
+            if (next < seq.ranges.length) {
+              enterRange(next);
+            } else if (seq.loop) {
+              enterRange(0);
+            } else {
+              el.pause();
+              sequenceRef.current = null;
+              setPlayingKey(null);
+              setLoopingKey(null);
+              return;
+            }
           }
+          setCurrentTime(el.currentTime);
         }
-        setCurrentTime(video.currentTime);
       }
       raf = requestAnimationFrame(tick);
     };
@@ -151,20 +132,19 @@ export function Editor() {
     return () => cancelAnimationFrame(raf);
   }, [playingKey, enterRange]);
 
-  // Pause playback when this tab is switched away from.
+  // Pause everything when the tab is switched away from.
   useEffect(() => {
     if (!isActive) {
-      videoRef.current?.pause();
+      pauseAllExcept(null);
       sequenceRef.current = null;
-      switchingRef.current = false;
       setPlayingKey(null);
       setLoopingKey(null);
     }
   }, [isActive]);
 
-  // Keyboard shortcuts: S/E mark on the active source's video.
+  // Keyboard shortcuts: S/E mark on the active source's player.
   useEffect(() => {
-    if (!displayUrl || !isActive) return;
+    if (!isActive || !editor.activeSourceId) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
       const el = e.target as HTMLElement | null;
@@ -173,33 +153,39 @@ export function Editor() {
       const key = e.key.toLowerCase();
       if (key === 's') {
         e.preventDefault();
-        markStart(videoRef.current?.currentTime ?? 0);
+        markStart(getEl(editor.activeSourceId)?.currentTime ?? 0);
       } else if (key === 'e') {
         e.preventDefault();
-        markEnd(videoRef.current?.currentTime ?? 0);
+        markEnd(getEl(editor.activeSourceId)?.currentTime ?? 0);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [displayUrl, isActive, markStart, markEnd]);
+  }, [isActive, editor.activeSourceId, markStart, markEnd]);
 
-  const getCurrentTime = useCallback(() => videoRef.current?.currentTime ?? 0, []);
+  const getCurrentTime = useCallback(
+    () => getEl(editor.activeSourceId)?.currentTime ?? 0,
+    [editor.activeSourceId]
+  );
 
-  const seekTo = useCallback((seconds: number) => {
-    sequenceRef.current = null;
-    switchingRef.current = false;
-    pendingSeekRef.current = null;
-    setPlayingKey(null);
-    setLoopingKey(null);
-    const video = videoRef.current;
-    if (!video) return;
-    video.currentTime = Math.max(0, seconds);
-    video.focus?.();
-  }, []);
+  const seekTo = useCallback(
+    (seconds: number) => {
+      sequenceRef.current = null;
+      setPlayingKey(null);
+      setLoopingKey(null);
+      const target = focusedRef.current;
+      setFocusedSourceId(editor.activeSourceId);
+      const el = getEl(target);
+      if (!el) return;
+      el.currentTime = Math.max(0, seconds);
+      el.focus?.();
+    },
+    [editor.activeSourceId]
+  );
 
   const startSequence = useCallback(
     (ranges: PlayRange[], key: string, loop: boolean) => {
-      const valid = ranges.filter((r) => r.end > r.start && urlsRef.current[r.sourceId]);
+      const valid = ranges.filter((r) => r.end > r.start && elsRef.current.has(r.sourceId));
       if (valid.length === 0) return;
       sequenceRef.current = { ranges: valid, i: 0, loop };
       setPlayingKey(key);
@@ -220,22 +206,21 @@ export function Editor() {
         sequenceRef.current = null;
         setPlayingKey(null);
         setLoopingKey(null);
-        videoRef.current?.pause();
+        pauseAllExcept(null);
+        setFocusedSourceId(editor.activeSourceId);
         return;
       }
       startSequence(ranges, key, true);
     },
-    [loopingKey, startSequence]
+    [loopingKey, startSequence, editor.activeSourceId]
   );
 
   const stopPlayback = useCallback(() => {
     sequenceRef.current = null;
-    switchingRef.current = false;
     setPlayingKey(null);
     setLoopingKey(null);
-    videoRef.current?.pause();
-    // Revert the player to the active source.
-    setDisplaySourceId(editor.activeSourceId);
+    pauseAllExcept(null);
+    setFocusedSourceId(editor.activeSourceId);
   }, [editor.activeSourceId]);
 
   const previewRange = useCallback(
@@ -251,6 +236,9 @@ export function Editor() {
   }, [editor.title, saveAsVariation]);
 
   const hasSources = editor.sources.length > 0;
+  const focusedSource = editor.sources.find((s) => s.id === focusedSourceId) ?? null;
+  const focusedHasFile = focusedSource ? urls[focusedSource.id] != null : false;
+  const duration = focusedSource?.meta.duration ?? null;
 
   return (
     <div className="space-y-5">
@@ -298,16 +286,25 @@ export function Editor() {
 
       <SourcesPanel />
 
-      {displayUrl && (
-        <Preview ref={videoRef} url={displayUrl} currentTime={currentTime} duration={duration} />
+      {hasSources && (
+        <SourcePlayers
+          sources={editor.sources}
+          urls={urls}
+          activeSourceId={editor.activeSourceId}
+          focusedSourceId={focusedSourceId}
+          currentTime={currentTime}
+          onActivate={setActiveSource}
+          registerEl={registerEl}
+          onTime={onTime}
+        />
       )}
 
-      {displayUrl && displaySourceId && duration != null && duration > 0 && (
+      {focusedHasFile && focusedSourceId && duration != null && duration > 0 && (
         <Timeline
           duration={duration}
           currentTime={currentTime}
           onSeek={seekTo}
-          sourceId={displaySourceId}
+          sourceId={focusedSourceId}
         />
       )}
 
@@ -316,7 +313,7 @@ export function Editor() {
       {hasSources && (
         <SegmentList
           duration={duration}
-          displaySourceId={displaySourceId}
+          displaySourceId={focusedSourceId}
           getCurrentTime={getCurrentTime}
           seekTo={seekTo}
           previewRange={previewRange}

@@ -13,12 +13,13 @@ machine, and no server-side storage is required.
 - **Cut & splice** — enter ranges like `00:00 – 00:10`, `00:15 – 00:19`,
   `00:38 – 00:39`, `00:55 – 01:00`; the app extracts each range and concatenates
   them into one video.
-- **Multiple source videos** — add several linked sources to one session and
-  combine clips from different videos. New segments default to the active source
-  (like the active group); each segment has a source dropdown to change which
-  video it's cut from. The timeline/player show the active source; a group can
-  mix segments from any sources and is spliced into one video. Playback (preview,
-  play group, loop) swaps the player across sources automatically.
+- **Multiple source videos** — add up to **4** linked sources to one session and
+  combine clips from different videos. Each source gets its **own video player**,
+  shown side by side (2 → halves, 3 → thirds, 4 → quarters). New segments default
+  to the active source (like the active group); each segment has a source dropdown
+  to change which video it's cut from. The timeline follows the active source; a
+  group can mix segments from any sources and is spliced into one video. Playback
+  (preview, play group, loop) plays each source in its own player, in turn.
 - **Multiple tabs** — open several tabs to edit different videos and sessions at
   once. Each tab keeps its own sources, segments, groups, playback, and save
   state; keyboard shortcuts only affect the active tab. Opening a saved session
