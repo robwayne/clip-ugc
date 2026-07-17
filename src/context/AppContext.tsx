@@ -41,6 +41,18 @@ interface EditorState {
   openSegmentId: string | null;
   /** Most recently closed segment, so a repeated E can adjust its end. */
   lastClosedSegmentId: string | null;
+  /** Serialized editor state at the last save/open; null if never saved. */
+  savedSnapshot: string | null;
+}
+
+/** Serialize the savable parts of the editor to detect unsaved changes. */
+function serializeForSave(e: EditorState): string {
+  return JSON.stringify({
+    title: e.title.trim(),
+    source: e.source ? { name: e.source.name, size: e.source.size } : null,
+    segments: e.segments.map((s) => ({ start: s.start, end: s.end, groupId: s.groupId })),
+    groups: e.groups.map((g) => ({ id: g.id, name: g.name, color: g.color })),
+  });
 }
 
 interface AppContextValue {
@@ -75,10 +87,18 @@ interface AppContextValue {
 
   history: ClipSession[];
   saveCurrentSession: (outputName?: string) => void;
+  /** Manually save/update the current project in history. */
+  saveProject: () => void;
+  /** Fork the current edits into a brand-new named session (variation). */
+  saveAsVariation: (name: string) => void;
   openSession: (session: ClipSession) => void;
   deleteSession: (id: string) => void;
 
   needsReselect: boolean;
+  /** True when the current editor has unsaved changes. */
+  isDirty: boolean;
+  /** True when the current session already exists in history. */
+  existsInHistory: boolean;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -96,6 +116,7 @@ function emptyEditor(): EditorState {
     selectedSegmentId: null,
     openSegmentId: null,
     lastClosedSegmentId: null,
+    savedSnapshot: null,
   };
 }
 
@@ -330,17 +351,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const saveCurrentSession = useCallback((outputName?: string) => {
     setEditor((e) => {
       if (!e.source) return e;
+      const title = e.title.trim() || e.source.name;
       const session = buildSession({
         id: e.sessionId,
         createdAt: e.createdAt,
-        title: e.title.trim() || e.source.name,
+        title,
         source: e.source,
         segments: e.segments,
         groups: e.groups,
-        outputName: outputName ?? `${e.title.trim() || 'output'}.mp4`,
+        outputName: outputName ?? `${title}.mp4`,
       });
       setHistory(upsertSession(session));
-      return e;
+      const saved = { ...e, title };
+      return { ...saved, savedSnapshot: serializeForSave(saved) };
+    });
+  }, []);
+
+  /** Manually save/update the current project in history. */
+  const saveProject = useCallback(() => saveCurrentSession(), [saveCurrentSession]);
+
+  /** Fork the current edits into a new named session, leaving the original. */
+  const saveAsVariation = useCallback((name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const newId = makeId();
+    const now = Date.now();
+    setEditor((e) => {
+      if (!e.source) return e;
+      const forked = { ...e, sessionId: newId, createdAt: now, title: trimmed };
+      const session = buildSession({
+        id: newId,
+        createdAt: now,
+        title: trimmed,
+        source: e.source,
+        segments: e.segments,
+        groups: e.groups,
+        outputName: `${trimmed}.mp4`,
+      });
+      setHistory(upsertSession(session));
+      return { ...forked, savedSnapshot: serializeForSave(forked) };
     });
   }, []);
 
@@ -353,7 +402,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         prev.source.size === session.source.size
           ? prev.file
           : null;
-      return {
+      const opened: EditorState = {
         sessionId: session.id,
         createdAt: session.createdAt,
         title: session.title,
@@ -370,7 +419,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         selectedSegmentId: null,
         openSegmentId: null,
         lastClosedSegmentId: null,
+        savedSnapshot: null,
       };
+      // Snapshot the opened state so edits made afterwards register as dirty.
+      return { ...opened, savedSnapshot: serializeForSave(opened) };
     });
     setView('editor');
   }, []);
@@ -380,6 +432,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const needsReselect = editor.source !== null && editor.file === null;
+  const existsInHistory = history.some((s) => s.id === editor.sessionId);
+  const isDirty =
+    editor.savedSnapshot === null
+      ? editor.source !== null && (editor.segments.length > 0 || editor.title.trim() !== '')
+      : serializeForSave(editor) !== editor.savedSnapshot;
 
   const value = useMemo<AppContextValue>(
     () => ({
@@ -405,9 +462,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       resetEditor,
       history,
       saveCurrentSession,
+      saveProject,
+      saveAsVariation,
       openSession,
       deleteSession,
       needsReselect,
+      isDirty,
+      existsInHistory,
     }),
     [
       view,
@@ -431,9 +492,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       resetEditor,
       history,
       saveCurrentSession,
+      saveProject,
+      saveAsVariation,
       openSession,
       deleteSession,
       needsReselect,
+      isDirty,
+      existsInHistory,
     ]
   );
 

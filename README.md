@@ -31,9 +31,16 @@ machine, and no server-side storage is required.
   Hit **Play group** to preview a group's clips back-to-back — as if already
   concatenated — or **Play all** to preview the whole final splice, without
   rendering anything.
-- **Group & final downloads** — download each group as its own spliced video
-  (saved using the group name), and, when there are multiple groups, the final
-  combined video of all groups in order.
+- **Per-group splice & download** (primary flow) — splice and download each
+  group on its own, saved using the group name, without processing any other
+  group. Each group has its own splice/progress/cancel/download. Combining every
+  group into one final video is an **optional** step that reuses the already
+  spliced groups when available (fast).
+- **Cancel a splice** — stop an in-progress splice at any time; the ffmpeg worker
+  is terminated and reloaded for the next run.
+- **Save & variations** — save the current project to history at any time, or
+  **save as variation** to fork the latest edits of a history-opened project into
+  a new, differently named session, leaving the original intact.
 - **Works with standard formats** — MP4, MKV, MOV, WebM, AVI and more. Every clip
   is normalized to H.264/AAC MP4 so the pieces splice together cleanly regardless
   of the source container.
@@ -41,26 +48,27 @@ machine, and no server-side storage is required.
   segment's start/end, seek to a segment, or preview just that range.
 - **Flexible timestamps** — accepts `ss`, `mm:ss`, or `hh:mm:ss`, with optional
   fractional seconds (e.g. `01:23.5`). Paste several ranges at once.
-- **Session history** — every splice is saved (source metadata + timestamps +
-  output name) to `localStorage` so you can revisit and re-edit past sessions.
+- **Session history** — saved projects (source metadata + timestamps + groups)
+  live in `localStorage` so you can revisit and re-edit past sessions.
 - **Missing-source handling** — source files themselves aren't stored. Reopening
   a saved session shows a clear warning and lets you reselect the source video to
   keep editing its timestamps.
 
 ## How it works
 
-For each session the pipeline:
+The unit of work is a single splice of one group. When you splice a group:
 
-1. Loads the uploaded file into ffmpeg's in-memory filesystem.
-2. Re-encodes each `[start, end]` range into a normalized MP4 clip (frame-accurate
-   cuts, consistent codec parameters). These clips live only in ffmpeg's virtual
-   filesystem as concat inputs and are deleted at the end — they are never read
-   back into downloadable files.
-3. For each bucket — each group in order, then a trailing "Ungrouped" bucket —
-   concatenates its clips with the ffmpeg concat demuxer using stream copy
-   (fast, lossless) into that group's splice, saved by the group name.
-4. Concatenates every clip, in bucket order, into the single final output. With
-   only one bucket this is just the flat splice of all segments.
+1. Loads the source into ffmpeg's in-memory filesystem (once per run).
+2. Re-encodes each of that group's `[start, end]` ranges into a normalized MP4
+   clip (frame-accurate cuts, consistent codec parameters). These clips live only
+   in ffmpeg's virtual filesystem as concat inputs and are deleted afterwards.
+3. Concatenates the clips with the ffmpeg concat demuxer using stream copy (fast,
+   lossless) into that group's video, saved by the group name.
+
+Only the group you asked for is processed, so groups can be spliced and
+downloaded independently. The optional **Combine all groups** step stitches the
+already-spliced group videos together (stream copy) when they're available, and
+otherwise splices everything from the source.
 
 ## Getting started
 

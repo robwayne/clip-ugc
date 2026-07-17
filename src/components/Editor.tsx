@@ -10,7 +10,16 @@ import { SegmentList } from './SegmentList';
 import { RenderPanel } from './RenderPanel';
 
 export function Editor() {
-  const { editor, setTitle, markStart, markEnd } = useApp();
+  const {
+    editor,
+    setTitle,
+    markStart,
+    markEnd,
+    saveProject,
+    saveAsVariation,
+    isDirty,
+    existsInHistory,
+  } = useApp();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
@@ -150,6 +159,12 @@ export function Editor() {
     [playSegments]
   );
 
+  const handleSaveVariation = useCallback(() => {
+    const suggestion = `${editor.title.trim() || 'Untitled'} (variation)`;
+    const name = window.prompt('Name this variation', suggestion);
+    if (name && name.trim()) saveAsVariation(name.trim());
+  }, [editor.title, saveAsVariation]);
+
   const duration = editor.source?.duration ?? null;
 
   return (
@@ -165,6 +180,37 @@ export function Editor() {
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Untitled clip session"
         />
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            className="btn-secondary"
+            onClick={saveProject}
+            disabled={!editor.source || !isDirty}
+            title={
+              existsInHistory ? 'Update this saved project' : 'Save this project to history'
+            }
+          >
+            {existsInHistory ? 'Save' : 'Save project'}
+          </button>
+          {existsInHistory && (
+            <button
+              className="btn-ghost"
+              onClick={handleSaveVariation}
+              disabled={!editor.source}
+              title="Save the current edits as a new named session, keeping the original"
+            >
+              Save as variation…
+            </button>
+          )}
+          <span className="text-xs text-white/40">
+            {!editor.source
+              ? 'Load a video to save'
+              : isDirty
+              ? existsInHistory
+                ? 'Unsaved changes'
+                : 'Not saved yet'
+              : 'All changes saved'}
+          </span>
+        </div>
       </div>
 
       <SourcePicker />

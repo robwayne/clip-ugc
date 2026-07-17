@@ -40,29 +40,12 @@ export interface ClipSession {
   outputName: string;
 }
 
-/** A produced splice of one bucket (group, or the ungrouped set). */
-export interface RenderedBucket {
-  groupId: string | null;
-  name: string;
-  color: string | null;
-  segmentCount: number;
+/** A produced splice (one group, or the combined final), ready to download. */
+export interface SpliceResult {
   blob: Blob;
   url: string;
   filename: string;
   duration: number;
-}
-
-/** The full result of a render. */
-export interface RenderResult {
-  /** One splice per bucket (group + trailing ungrouped), named by group. */
-  buckets: RenderedBucket[];
-  /** The single stitched output: all buckets concatenated in order. */
-  final: {
-    blob: Blob;
-    url: string;
-    filename: string;
-    duration: number;
-  };
 }
 
 /** Progress callback payload during rendering. */
