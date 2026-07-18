@@ -145,11 +145,12 @@ export function SegmentRow({
             ))}
           </select>
         </label>
+      </div>
 
-        <div
-          className="mb-0.5 flex flex-1 flex-wrap items-center justify-end gap-1"
-          onClick={(e) => e.stopPropagation()}
-        >
+      <div
+        className="mt-2 flex flex-wrap items-center gap-1 pl-9"
+        onClick={(e) => e.stopPropagation()}
+      >
           <button
             className="btn-ghost px-2 py-1 text-xs"
             onClick={onSetStart}
@@ -199,7 +200,6 @@ export function SegmentRow({
           >
             ✕
           </button>
-        </div>
       </div>
 
       <div className="mt-1 pl-9 text-xs text-white/40">
