@@ -5,6 +5,7 @@ import { useApp } from '@/context/AppContext';
 import { formatDuration, formatTimestamp, parseTimestamp } from '@/lib/time';
 import { computeBuckets, isValidSegment, totalOutputDuration } from '@/lib/groups';
 import { SegmentRow } from './SegmentRow';
+import { GroupAudioControl } from './GroupAudioControl';
 
 type Range = { start: number; end: number; sourceId: string };
 
@@ -19,6 +20,8 @@ interface SegmentListProps {
   stopPlayback: () => void;
   playingKey: string | null;
   loopingKey: string | null;
+  audioUrl: string | null;
+  audioSourceDuration: number | null;
 }
 
 export function SegmentList({
@@ -32,6 +35,8 @@ export function SegmentList({
   stopPlayback,
   playingKey,
   loopingKey,
+  audioUrl,
+  audioSourceDuration,
 }: SegmentListProps) {
   const {
     editor,
@@ -42,11 +47,22 @@ export function SegmentList({
     moveSegmentWithinGroup,
     moveSegmentBefore,
     setSelectedSegment,
+    setGroupAudio,
   } = useApp();
   const segments = editor.segments;
   const buckets = computeBuckets(segments, editor.groups);
   const sourceName = (id: string) =>
     editor.sources.find((s) => s.id === id)?.meta.name ?? 'Unknown source';
+  const groupById = new Map(editor.groups.map((g) => [g.id, g]));
+
+  // Collapsed accordion state, keyed by bucket key.
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const toggleCollapsed = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -133,12 +149,23 @@ export function SegmentList({
               .map((s) => ({ start: s.start, end: s.end, sourceId: s.sourceId }));
             const isPlaying = playingKey === bucketKey;
             const isLooping = loopingKey === bucketKey;
+            const isCollapsed = collapsed.has(bucketKey);
+            const group = bucket.groupId != null ? groupById.get(bucket.groupId) : undefined;
             const droppableGroup =
               draggingSeg != null && draggingSeg.groupId === bucket.groupId;
 
             return (
               <section key={bucket.groupId ?? '__ungrouped__'}>
                 <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => toggleCollapsed(bucketKey)}
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-white/50 hover:bg-white/10 hover:text-white"
+                    aria-expanded={!isCollapsed}
+                    aria-label={isCollapsed ? 'Expand group' : 'Collapse group'}
+                    title={isCollapsed ? 'Expand' : 'Collapse'}
+                  >
+                    {isCollapsed ? '▸' : '▾'}
+                  </button>
                   <span
                     className="h-3 w-3 rounded-full"
                     style={{ background: bucket.color ?? '#64748b' }}
@@ -185,6 +212,19 @@ export function SegmentList({
                     </>
                   )}
                 </div>
+
+                {!isCollapsed && group && editor.audioSource && (
+                  <GroupAudioControl
+                    groupId={group.id}
+                    audio={group.audio ?? null}
+                    groupVideoDuration={totalOutputDuration(bucket.segments)}
+                    audioUrl={audioUrl}
+                    audioSourceDuration={audioSourceDuration}
+                    onChange={(a) => setGroupAudio(group.id, a)}
+                  />
+                )}
+
+                {!isCollapsed && (
                 <ul className="space-y-2">
                   {bucket.segments.map((segment, i) => (
                     <SegmentRow
@@ -241,6 +281,7 @@ export function SegmentList({
                     />
                   ))}
                 </ul>
+                )}
               </section>
             );
           })}

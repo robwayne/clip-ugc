@@ -23,7 +23,18 @@ export interface Group {
   name: string;
   /** Hex color used on the timeline and in the UI. */
   color: string;
+  /**
+   * Optional background-audio segment (on the audio track source's timeline).
+   * When set, this group's video audio is muted and replaced by this segment
+   * at splice. Must be long enough to cover the group's total video duration.
+   */
+  audio?: { start: number; end: number } | null;
 }
+
+/** Persisted reference to the session's background-audio track source. */
+export type PersistedAudioSource =
+  | { kind: 'video'; sourceId: string }
+  | { kind: 'file'; id: string; meta: SourceMeta };
 
 /** Metadata about a source video. Files themselves are never persisted. */
 export interface SourceMeta {
@@ -50,6 +61,8 @@ export interface ClipSession {
     sourceId: string;
   }>;
   groups: Group[];
+  /** The session's background-audio track source, if any. */
+  audioSource?: PersistedAudioSource | null;
   outputName: string;
 }
 

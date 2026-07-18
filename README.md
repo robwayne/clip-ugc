@@ -45,6 +45,13 @@ machine, and no server-side storage is required.
 - **Loop** — 🔁 loop any single segment or a whole group so it keeps replaying.
   Only one thing loops at a time; starting a new loop takes over, and the active
   loop is highlighted.
+- **Background audio per group** — set one **audio track source** for the session
+  (audio extracted from one of the source videos, or an uploaded .mp3/.wav). Each
+  group can then use a **segment** of it (long enough to cover the group's video
+  length) as its background audio: at splice, the group's video audio is muted and
+  replaced by that audio segment. Coverage is validated before you can splice.
+- **Collapsible groups** — each group in the Segments list is an accordion; click
+  the ▾/▸ caret to hide or show its segments.
 - **Per-group splice & download** (primary flow) — splice and download each
   group on its own, saved using the group name, without processing any other
   group. Each group has its own splice/progress/cancel/download. Combining every

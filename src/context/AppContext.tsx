@@ -18,7 +18,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import type { ClipSession, Group, Segment, SourceMeta } from '@/lib/types';
+import type { ClipSession, Group, PersistedAudioSource, Segment, SourceMeta } from '@/lib/types';
 import { makeId } from '@/lib/id';
 import { nextGroupColor } from '@/lib/groups';
 import {
@@ -37,6 +37,11 @@ export interface EditorSource {
   file: File | null;
 }
 
+/** The session's background-audio track source (one at a time). */
+export type EditorAudioSource =
+  | { kind: 'video'; sourceId: string }
+  | { kind: 'file'; id: string; meta: SourceMeta; file: File | null };
+
 interface EditorState {
   /** Stable identity of this open tab (distinct from sessionId). */
   tabId: string;
@@ -46,6 +51,8 @@ interface EditorState {
   sources: EditorSource[];
   /** Which source new segments default to (like the active group). */
   activeSourceId: string | null;
+  /** Background-audio track source, or null. */
+  audioSource: EditorAudioSource | null;
   segments: Segment[];
   groups: Group[];
   activeGroupId: string | null;
@@ -67,14 +74,32 @@ function serializeForSave(e: EditorState): string {
   return JSON.stringify({
     title: e.title.trim(),
     sources: e.sources.map((s) => ({ id: s.id, name: s.meta.name, size: s.meta.size })),
+    audioSource: audioSourceKey(e.audioSource),
     segments: e.segments.map((s) => ({
       start: s.start,
       end: s.end,
       groupId: s.groupId,
       sourceId: s.sourceId,
     })),
-    groups: e.groups.map((g) => ({ id: g.id, name: g.name, color: g.color })),
+    groups: e.groups.map((g) => ({
+      id: g.id,
+      name: g.name,
+      color: g.color,
+      audio: g.audio ?? null,
+    })),
   });
+}
+
+function audioSourceKey(a: EditorAudioSource | null): unknown {
+  if (!a) return null;
+  return a.kind === 'video' ? { kind: 'video', sourceId: a.sourceId } : { kind: 'file', id: a.id };
+}
+
+function toPersistedAudio(a: EditorAudioSource | null): PersistedAudioSource | null {
+  if (!a) return null;
+  return a.kind === 'video'
+    ? { kind: 'video', sourceId: a.sourceId }
+    : { kind: 'file', id: a.id, meta: a.meta };
 }
 
 function computeDirty(e: EditorState): boolean {
@@ -91,6 +116,7 @@ function emptyEditor(): EditorState {
     title: '',
     sources: [],
     activeSourceId: null,
+    audioSource: null,
     segments: [],
     groups: [],
     activeGroupId: null,
@@ -125,6 +151,13 @@ interface AppContextValue {
   replaceSourceFile: (sourceId: string, file: File, meta: SourceMeta) => void;
   removeSource: (sourceId: string) => void;
   setActiveSource: (sourceId: string) => void;
+
+  // Background audio track source
+  setAudioTrackVideo: (sourceId: string) => void;
+  setAudioTrackFile: (file: File, meta: SourceMeta) => void;
+  replaceAudioTrackFile: (file: File, meta: SourceMeta) => void;
+  clearAudioTrack: () => void;
+  setGroupAudio: (groupId: string, audio: { start: number; end: number } | null) => void;
 
   addSegment: (segment?: Partial<Segment>) => string;
   updateSegment: (id: string, patch: Partial<Segment>) => void;
@@ -174,6 +207,11 @@ interface TabMutators {
   replaceSourceFile: (tabId: string, sourceId: string, file: File, meta: SourceMeta) => void;
   removeSource: (tabId: string, sourceId: string) => void;
   setActiveSource: (tabId: string, sourceId: string) => void;
+  setAudioTrackVideo: (tabId: string, sourceId: string) => void;
+  setAudioTrackFile: (tabId: string, file: File, meta: SourceMeta) => void;
+  replaceAudioTrackFile: (tabId: string, file: File, meta: SourceMeta) => void;
+  clearAudioTrack: (tabId: string) => void;
+  setGroupAudio: (tabId: string, groupId: string, audio: { start: number; end: number } | null) => void;
   addSegment: (tabId: string, segment?: Partial<Segment>) => string;
   updateSegment: (tabId: string, id: string, patch: Partial<Segment>) => void;
   removeSegment: (tabId: string, id: string) => void;
@@ -277,7 +315,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const segments = e.segments.filter((s) => s.sourceId !== sourceId);
         const activeSourceId =
           e.activeSourceId === sourceId ? sources[0]?.id ?? null : e.activeSourceId;
-        return { ...e, sources, segments, activeSourceId };
+        // If the audio track was extracted from this video, drop it too.
+        const audioSource =
+          e.audioSource?.kind === 'video' && e.audioSource.sourceId === sourceId
+            ? null
+            : e.audioSource;
+        return { ...e, sources, segments, activeSourceId, audioSource };
       }),
     [updateTab]
   );
@@ -285,6 +328,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setActiveSource = useCallback(
     (tabId: string, sourceId: string) =>
       updateTab(tabId, (e) => ({ ...e, activeSourceId: sourceId })),
+    [updateTab]
+  );
+
+  const setAudioTrackVideo = useCallback(
+    (tabId: string, sourceId: string) =>
+      updateTab(tabId, (e) => ({ ...e, audioSource: { kind: 'video', sourceId } })),
+    [updateTab]
+  );
+
+  const setAudioTrackFile = useCallback(
+    (tabId: string, file: File, meta: SourceMeta) =>
+      updateTab(tabId, (e) => ({
+        ...e,
+        audioSource: { kind: 'file', id: makeId(), meta, file },
+      })),
+    [updateTab]
+  );
+
+  const replaceAudioTrackFile = useCallback(
+    (tabId: string, file: File, meta: SourceMeta) =>
+      updateTab(tabId, (e) => {
+        if (e.audioSource?.kind !== 'file') return e;
+        return { ...e, audioSource: { ...e.audioSource, file, meta } };
+      }),
+    [updateTab]
+  );
+
+  const clearAudioTrack = useCallback(
+    (tabId: string) =>
+      updateTab(tabId, (e) => ({
+        ...e,
+        audioSource: null,
+        // Drop any per-group audio segments — they referenced the old source.
+        groups: e.groups.map((g) => ({ ...g, audio: null })),
+      })),
+    [updateTab]
+  );
+
+  const setGroupAudio = useCallback(
+    (tabId: string, groupId: string, audio: { start: number; end: number } | null) =>
+      updateTab(tabId, (e) => ({
+        ...e,
+        groups: e.groups.map((g) => (g.id === groupId ? { ...g, audio } : g)),
+      })),
     [updateTab]
   );
 
@@ -507,6 +594,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           createdAt: e.createdAt,
           title,
           sources: e.sources.map((s) => ({ id: s.id, meta: s.meta })),
+          audioSource: toPersistedAudio(e.audioSource),
           segments: e.segments,
           groups: e.groups,
           outputName: `${title}.mp4`,
@@ -533,6 +621,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           createdAt: now,
           title: trimmed,
           sources: e.sources.map((s) => ({ id: s.id, meta: s.meta })),
+          audioSource: toPersistedAudio(e.audioSource),
           segments: e.segments,
           groups: e.groups,
           outputName: `${trimmed}.mp4`,
@@ -552,6 +641,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       meta: s.meta,
       file: null,
     }));
+    const savedAudio = session.audioSource ?? null;
+    const audioSource: EditorAudioSource | null = !savedAudio
+      ? null
+      : savedAudio.kind === 'video'
+      ? { kind: 'video', sourceId: savedAudio.sourceId }
+      : { kind: 'file', id: savedAudio.id, meta: savedAudio.meta, file: null };
     const opened: EditorState = {
       tabId: makeId(),
       sessionId: session.id,
@@ -559,6 +654,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       title: session.title,
       sources,
       activeSourceId: sources[0]?.id ?? null,
+      audioSource,
       groups: (session.groups ?? []).map((g) => ({ ...g })),
       segments: session.segments.map((s) => ({
         id: makeId(),
@@ -590,6 +686,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       replaceSourceFile,
       removeSource,
       setActiveSource,
+      setAudioTrackVideo,
+      setAudioTrackFile,
+      replaceAudioTrackFile,
+      clearAudioTrack,
+      setGroupAudio,
       addSegment,
       updateSegment,
       removeSegment,
@@ -612,6 +713,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       replaceSourceFile,
       removeSource,
       setActiveSource,
+      setAudioTrackVideo,
+      setAudioTrackFile,
+      replaceAudioTrackFile,
+      clearAudioTrack,
+      setGroupAudio,
       addSegment,
       updateSegment,
       removeSegment,
@@ -700,6 +806,11 @@ export function useApp(): AppContextValue {
         m.replaceSourceFile(editor.tabId, sourceId, file, meta),
       removeSource: (sourceId) => m.removeSource(editor.tabId, sourceId),
       setActiveSource: (sourceId) => m.setActiveSource(editor.tabId, sourceId),
+      setAudioTrackVideo: (sourceId) => m.setAudioTrackVideo(editor.tabId, sourceId),
+      setAudioTrackFile: (file, meta) => m.setAudioTrackFile(editor.tabId, file, meta),
+      replaceAudioTrackFile: (file, meta) => m.replaceAudioTrackFile(editor.tabId, file, meta),
+      clearAudioTrack: () => m.clearAudioTrack(editor.tabId),
+      setGroupAudio: (groupId, audio) => m.setGroupAudio(editor.tabId, groupId, audio),
       addSegment: (segment) => m.addSegment(editor.tabId, segment),
       updateSegment: (id, patch) => m.updateSegment(editor.tabId, id, patch),
       removeSegment: (id) => m.removeSegment(editor.tabId, id),

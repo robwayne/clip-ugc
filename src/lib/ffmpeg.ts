@@ -146,6 +146,11 @@ export async function renderSplice(
     outputBaseName?: string;
     label?: string;
     signal?: AbortSignal;
+    /**
+     * Optional background audio: mutes the video clips' audio and uses this
+     * instead. `start` seconds of `file`, taken for the spliced duration.
+     */
+    audioTrack?: { file: File; start: number };
   } = {}
 ): Promise<SpliceResult> {
   const { signal } = opts;
@@ -253,9 +258,60 @@ export async function renderSplice(
     scratchFiles.add(outName);
     await concatFiles(ffmpeg, clipNames, outName, scratchFiles);
 
-    const data = await ffmpeg.readFile(outName);
-    const blob = new Blob([toArrayBuffer(data)], { type: 'video/mp4' });
     const duration = ordered.reduce((sum, s) => sum + (s.end - s.start), 0);
+
+    // Optional background audio: mute the video's own audio and mux in a slice
+    // of the audio track source covering the whole group duration.
+    let resultName = outName;
+    if (opts.audioTrack) {
+      throwIfAborted();
+      report(0.97, 'Applying background audio…');
+      const audioInput = await ensureInput(ffmpeg, opts.audioTrack.file);
+      const audioClip = `aud_${clipCounter++}.m4a`;
+      scratchFiles.add(audioClip);
+      await ffmpeg.exec([
+        '-ss',
+        Math.max(0, opts.audioTrack.start).toFixed(3),
+        '-i',
+        audioInput,
+        '-t',
+        duration.toFixed(3),
+        '-vn',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '192k',
+        '-ac',
+        '2',
+        audioClip,
+      ]);
+      const muxed = `mux_${clipCounter++}.mp4`;
+      scratchFiles.add(muxed);
+      // Map the concatenated video (0:v) + the new audio (1:a); the clips'
+      // original audio is dropped by not mapping 0:a.
+      await ffmpeg.exec([
+        '-i',
+        outName,
+        '-i',
+        audioClip,
+        '-map',
+        '0:v:0',
+        '-map',
+        '1:a:0',
+        '-c:v',
+        'copy',
+        '-c:a',
+        'copy',
+        '-shortest',
+        '-movflags',
+        '+faststart',
+        muxed,
+      ]);
+      resultName = muxed;
+    }
+
+    const data = await ffmpeg.readFile(resultName);
+    const blob = new Blob([toArrayBuffer(data)], { type: 'video/mp4' });
 
     report(1, 'Done');
     return {

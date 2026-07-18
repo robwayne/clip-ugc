@@ -3,7 +3,7 @@
 // Only metadata is stored (source name/size/duration, timestamp segments,
 // output name, timestamps). The actual video files are never persisted, so a
 // reopened session may need the user to reselect its source file.
-import type { ClipSession, Group, Segment, SourceRefMeta } from './types';
+import type { ClipSession, Group, PersistedAudioSource, Segment, SourceRefMeta } from './types';
 import { makeId } from './id';
 
 const STORAGE_KEY = 'clip-ugc:history:v1';
@@ -67,6 +67,7 @@ export function buildSession(params: {
   id?: string;
   title: string;
   sources: SourceRefMeta[];
+  audioSource?: PersistedAudioSource | null;
   segments: Segment[];
   groups: Group[];
   outputName: string;
@@ -79,13 +80,19 @@ export function buildSession(params: {
     createdAt: params.createdAt ?? now,
     updatedAt: now,
     sources: params.sources.map((s) => ({ id: s.id, meta: s.meta })),
+    audioSource: params.audioSource ?? null,
     segments: params.segments.map((s) => ({
       start: s.start,
       end: s.end,
       groupId: s.groupId ?? null,
       sourceId: s.sourceId,
     })),
-    groups: params.groups.map((g) => ({ id: g.id, name: g.name, color: g.color })),
+    groups: params.groups.map((g) => ({
+      id: g.id,
+      name: g.name,
+      color: g.color,
+      audio: g.audio ?? null,
+    })),
     outputName: params.outputName,
   };
 }
@@ -108,7 +115,8 @@ function normalizeSession(session: ClipSession): ClipSession {
   return {
     ...session,
     sources,
-    groups,
+    audioSource: session.audioSource ?? null,
+    groups: groups.map((g) => ({ ...g, audio: g.audio ?? null })),
     segments: session.segments.map((s) => ({
       start: s.start,
       end: s.end,

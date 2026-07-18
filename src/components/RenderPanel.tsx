@@ -161,6 +161,35 @@ export function RenderPanel() {
 
   const baseName = editor.title || editor.sources[0]?.meta.name || 'video';
 
+  // Resolve the session's audio track source to a File + duration + key.
+  const audioFile = useMemo<File | null>(() => {
+    const a = editor.audioSource;
+    if (!a) return null;
+    return a.kind === 'file' ? a.file : fileBySource.get(a.sourceId) ?? null;
+  }, [editor.audioSource, fileBySource]);
+  const audioDuration = useMemo<number | null>(() => {
+    const a = editor.audioSource;
+    if (!a) return null;
+    return a.kind === 'file'
+      ? a.meta.duration
+      : editor.sources.find((s) => s.id === a.sourceId)?.meta.duration ?? null;
+  }, [editor.audioSource, editor.sources]);
+  const audioKey = editor.audioSource
+    ? editor.audioSource.kind === 'video'
+      ? `v:${editor.audioSource.sourceId}`
+      : `f:${editor.audioSource.id}`
+    : 'none';
+
+  const groupById = useMemo(() => {
+    const m = new Map<string, (typeof editor.groups)[number]>();
+    for (const g of editor.groups) m.set(g.id, g);
+    return m;
+  }, [editor.groups]);
+  const groupAudio = useCallback(
+    (groupId: string | null) => (groupId != null ? groupById.get(groupId)?.audio ?? null : null),
+    [groupById]
+  );
+
   const itemsFor = useCallback(
     (segs: Segment[]) =>
       segs
@@ -170,44 +199,103 @@ export function RenderPanel() {
     [fileBySource]
   );
 
-  const hasMissing = (segs: Segment[]) =>
-    segs.some((s) => !fileBySource.get(s.sourceId));
+  const audioTrackFor = useCallback(
+    (groupId: string | null): { file: File; start: number } | undefined => {
+      const a = groupAudio(groupId);
+      if (!a || !audioFile) return undefined;
+      return { file: audioFile, start: a.start };
+    },
+    [groupAudio, audioFile]
+  );
+
+  // Render signature includes the group's audio, so changing it marks stale.
+  const bucketSig = useCallback(
+    (groupId: string | null, segments: Segment[]) => {
+      const a = groupAudio(groupId);
+      const audioPart = a ? `${audioKey}:${a.start}:${a.end}` : 'noaudio';
+      return signatureOf(segments) + '|' + audioPart;
+    },
+    [groupAudio, audioKey]
+  );
+
+  // Why a group's splice is blocked, or null when it can go.
+  const blockReason = useCallback(
+    (groupId: string | null, segments: Segment[]): string | null => {
+      if (segments.some((s) => !fileBySource.get(s.sourceId)))
+        return 'A segment’s source video isn’t loaded — reselect it above.';
+      const a = groupAudio(groupId);
+      if (a) {
+        if (!audioFile) return 'The background-audio source file isn’t loaded.';
+        const groupDur = segments
+          .filter(isValidSegment)
+          .reduce((sum, x) => sum + (x.end - x.start), 0);
+        if (a.end - a.start + 0.05 < groupDur)
+          return `Audio segment (${(a.end - a.start).toFixed(1)}s) is shorter than this group’s video (${groupDur.toFixed(1)}s).`;
+        if (audioDuration != null && a.start + groupDur > audioDuration + 0.05)
+          return 'Audio segment extends past the end of the audio source.';
+      }
+      return null;
+    },
+    [fileBySource, groupAudio, audioFile, audioDuration]
+  );
 
   const spliceGroup = useCallback(
     (groupId: string | null, name: string, segments: Segment[]) => {
       const items = itemsFor(segments);
       if (items.length === 0) return;
-      runRender(bucketKey(groupId), signatureOf(segments), (signal, onProgress) =>
-        renderSplice(items, { outputBaseName: baseName, label: name, signal, onProgress })
+      runRender(bucketKey(groupId), bucketSig(groupId, segments), (signal, onProgress) =>
+        renderSplice(items, {
+          outputBaseName: baseName,
+          label: name,
+          audioTrack: audioTrackFor(groupId),
+          signal,
+          onProgress,
+        })
       );
     },
-    [itemsFor, baseName, runRender]
+    [itemsFor, baseName, bucketSig, audioTrackFor, runRender]
   );
 
   const spliceFinal = useCallback(() => {
-    const items = itemsFor(orderedAll);
-    if (items.length === 0) return;
-    const signature = signatureOf(orderedAll) + '|final';
-    runRender(FINAL_KEY, signature, (signal, onProgress) => {
-      // Fast path: if every group already has a fresh splice, just stitch those.
+    if (itemsFor(orderedAll).length === 0) return;
+    const signature = buckets.map((b) => bucketSig(b.groupId, b.segments)).join('||') + '|final';
+    runRender(FINAL_KEY, signature, async (signal, onProgress) => {
+      // Render each group (with its own audio), reusing fresh per-group splices,
+      // then concatenate — so per-group audio is preserved in the final.
       const current = statesRef.current;
-      const allFresh = buckets.every((b) => {
+      const parts: SpliceResult[] = [];
+      const temp: SpliceResult[] = [];
+      const steps = buckets.length + 1;
+      for (let bi = 0; bi < buckets.length; bi++) {
+        const b = buckets[bi];
         const st = current[bucketKey(b.groupId)];
-        return st?.phase === 'done' && st.result && st.signature === signatureOf(b.segments);
-      });
-      if (allFresh) {
-        const parts = buckets.map((b) => current[bucketKey(b.groupId)]!.result!);
-        return concatRenderedVideos(parts, {
-          outputBaseName: baseName,
-          label: 'final',
-          durationSeconds: totalDuration,
-          signal,
-          onProgress,
-        });
+        if (st?.phase === 'done' && st.result && st.signature === bucketSig(b.groupId, b.segments)) {
+          parts.push(st.result);
+        } else {
+          const res = await renderSplice(itemsFor(b.segments), {
+            outputBaseName: baseName,
+            label: b.name,
+            audioTrack: audioTrackFor(b.groupId),
+            signal,
+            onProgress: (p) => onProgress({ ratio: (bi + p.ratio) / steps, stage: p.stage }),
+          });
+          parts.push(res);
+          temp.push(res);
+        }
       }
-      return renderSplice(items, { outputBaseName: baseName, label: 'final', signal, onProgress });
+      const finalRes = await concatRenderedVideos(parts, {
+        outputBaseName: baseName,
+        label: 'final',
+        durationSeconds: totalDuration,
+        signal,
+        onProgress: (p) =>
+          onProgress({ ratio: (buckets.length + p.ratio) / steps, stage: p.stage }),
+      });
+      // Free the throwaway per-group renders we created just for the final.
+      temp.forEach((r) => revokeSplice(r));
+      return finalRes;
     });
-  }, [itemsFor, baseName, buckets, orderedAll, totalDuration, runRender]);
+  }, [itemsFor, orderedAll, baseName, buckets, bucketSig, audioTrackFor, totalDuration, runRender]);
 
   if (editor.sources.length === 0) {
     return (
@@ -245,7 +333,7 @@ export function RenderPanel() {
           const state = states[key] ?? idleState();
           const duration = bucket.segments.reduce((sum, s) => sum + (s.end - s.start), 0);
           const stale =
-            state.phase === 'done' && state.signature !== signatureOf(bucket.segments);
+            state.phase === 'done' && state.signature !== bucketSig(bucket.groupId, bucket.segments);
           return (
             <GroupSpliceCard
               key={key}
@@ -253,9 +341,10 @@ export function RenderPanel() {
               color={bucket.color}
               segmentCount={bucket.segments.length}
               duration={duration}
+              hasAudio={groupAudio(bucket.groupId) != null}
               state={state}
               stale={stale}
-              unavailable={hasMissing(bucket.segments)}
+              blockedReason={blockReason(bucket.groupId, bucket.segments)}
               isActive={activeKey === key}
               disabled={busy && activeKey !== key}
               onSplice={() => spliceGroup(bucket.groupId, bucket.name, bucket.segments)}
@@ -280,13 +369,17 @@ export function RenderPanel() {
             color={null}
             segmentCount={orderedAll.length}
             duration={totalDuration}
+            hasAudio={buckets.some((b) => groupAudio(b.groupId) != null)}
             state={states[FINAL_KEY] ?? idleState()}
             stale={
               (states[FINAL_KEY]?.phase === 'done' &&
-                states[FINAL_KEY]?.signature !== signatureOf(orderedAll) + '|final') ||
+                states[FINAL_KEY]?.signature !==
+                  buckets.map((b) => bucketSig(b.groupId, b.segments)).join('||') + '|final') ||
               false
             }
-            unavailable={hasMissing(orderedAll)}
+            blockedReason={
+              buckets.map((b) => blockReason(b.groupId, b.segments)).find((r) => r) ?? null
+            }
             isActive={activeKey === FINAL_KEY}
             disabled={busy && activeKey !== FINAL_KEY}
             onSplice={spliceFinal}
@@ -304,9 +397,10 @@ function GroupSpliceCard({
   color,
   segmentCount,
   duration,
+  hasAudio,
   state,
   stale,
-  unavailable,
+  blockedReason,
   isActive,
   disabled,
   onSplice,
@@ -317,9 +411,10 @@ function GroupSpliceCard({
   color: string | null;
   segmentCount: number;
   duration: number;
+  hasAudio: boolean;
   state: RenderState;
   stale: boolean;
-  unavailable: boolean;
+  blockedReason: string | null;
   isActive: boolean;
   disabled: boolean;
   onSplice: () => void;
@@ -336,6 +431,14 @@ function GroupSpliceCard({
             style={{ background: color ?? '#64748b' }}
           />
           <span className="text-sm font-medium">{name}</span>
+          {hasAudio && (
+            <span
+              className="rounded bg-brand-600/30 px-1.5 py-0.5 text-[10px] text-brand-100"
+              title="Video audio muted; background audio applied"
+            >
+              🎵 bg audio
+            </span>
+          )}
           <span className="text-xs text-white/40">
             {segmentCount} clip{segmentCount === 1 ? '' : 's'} · {formatDuration(duration)}
           </span>
@@ -349,8 +452,8 @@ function GroupSpliceCard({
             <button
               className="btn-primary px-3 py-1.5 text-xs"
               onClick={onSplice}
-              disabled={disabled || unavailable}
-              title={unavailable ? 'Reselect the missing source video(s) to splice' : undefined}
+              disabled={disabled || blockedReason != null}
+              title={blockedReason ?? undefined}
             >
               {state.phase === 'done' ? 'Re-splice' : primaryLabel}
             </button>
@@ -358,10 +461,8 @@ function GroupSpliceCard({
         </div>
       </div>
 
-      {unavailable && !rendering && (
-        <p className="mt-2 text-xs text-amber-300">
-          Some segments use a source whose file isn&apos;t loaded — reselect it above to splice.
-        </p>
+      {blockedReason && !rendering && (
+        <p className="mt-2 text-xs text-amber-300">{blockedReason}</p>
       )}
 
       {rendering && (

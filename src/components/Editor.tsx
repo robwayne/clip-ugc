@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { SourcesPanel } from './SourcesPanel';
 import { SourcePlayers } from './SourcePlayers';
+import { AudioPanel } from './AudioPanel';
 import { Timeline } from './Timeline';
 import { GroupsBar } from './GroupsBar';
 import { SegmentList } from './SegmentList';
@@ -59,6 +60,18 @@ export function Editor() {
       Object.values(next).forEach((u) => URL.revokeObjectURL(u));
     };
   }, [editor.sources]);
+
+  // ---- Object URL for an uploaded audio-track file ----
+  const [audioFileUrl, setAudioFileUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const a = editor.audioSource;
+    if (a?.kind === 'file' && a.file) {
+      const u = URL.createObjectURL(a.file);
+      setAudioFileUrl(u);
+      return () => URL.revokeObjectURL(u);
+    }
+    setAudioFileUrl(null);
+  }, [editor.audioSource]);
 
   // The source the timeline + playhead follow: the active source when idle, or
   // the source currently playing during a cross-source sequence.
@@ -240,6 +253,21 @@ export function Editor() {
   const focusedHasFile = focusedSource ? urls[focusedSource.id] != null : false;
   const duration = focusedSource?.meta.duration ?? null;
 
+  // Resolve the audio track source to a preview URL + metadata.
+  const audioSrc = editor.audioSource;
+  const audioMeta =
+    audioSrc == null
+      ? null
+      : audioSrc.kind === 'file'
+      ? audioSrc.meta
+      : editor.sources.find((s) => s.id === audioSrc.sourceId)?.meta ?? null;
+  const audioUrl =
+    audioSrc == null
+      ? null
+      : audioSrc.kind === 'file'
+      ? audioFileUrl
+      : urls[audioSrc.sourceId] ?? null;
+
   return (
     <div className="space-y-5">
       <div className="card">
@@ -308,6 +336,8 @@ export function Editor() {
         />
       )}
 
+      {hasSources && <AudioPanel audioUrl={audioUrl} audioMeta={audioMeta} />}
+
       {hasSources && <GroupsBar />}
 
       {hasSources && (
@@ -322,6 +352,8 @@ export function Editor() {
           stopPlayback={stopPlayback}
           playingKey={playingKey}
           loopingKey={loopingKey}
+          audioUrl={audioUrl}
+          audioSourceDuration={audioMeta?.duration ?? null}
         />
       )}
 
