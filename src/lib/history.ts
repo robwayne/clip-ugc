@@ -86,6 +86,7 @@ export function buildSession(params: {
       end: s.end,
       groupId: s.groupId ?? null,
       sourceId: s.sourceId,
+      muted: s.muted ?? false,
     })),
     groups: params.groups.map((g) => ({
       id: g.id,
@@ -122,6 +123,7 @@ function normalizeSession(session: ClipSession): ClipSession {
       end: s.end,
       groupId: (s as { groupId?: string | null }).groupId ?? null,
       sourceId: (s as { sourceId?: string }).sourceId ?? fallbackSourceId,
+      muted: (s as { muted?: boolean }).muted ?? false,
     })),
   };
 }

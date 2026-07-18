@@ -45,11 +45,17 @@ machine, and no server-side storage is required.
 - **Loop** — 🔁 loop any single segment or a whole group so it keeps replaying.
   Only one thing loops at a time; starting a new loop takes over, and the active
   loop is highlighted.
+- **Per-segment mute** — 🔊/🔇 mute any individual segment. A muted segment plays
+  silently in the preview (its audio drops out for that stretch and returns for the
+  next unmuted segment), and its audio is removed from the spliced output — the clip
+  is baked with a silent track so it concatenates cleanly with unmuted clips.
 - **Background audio per group** — set one **audio track source** for the session
   (audio extracted from one of the source videos, or an uploaded .mp3/.wav). Each
   group can then use a **segment** of it (long enough to cover the group's video
   length) as its background audio: at splice, the group's video audio is muted and
   replaced by that audio segment. Coverage is validated before you can splice.
+  Pressing **Play group** on such a group previews the result — the video players
+  are muted and the background audio is overlaid across the whole group.
 - **Collapsible groups** — each group in the Segments list is an accordion; click
   the ▾/▸ caret to hide or show its segments.
 - **Per-group splice & download** (primary flow) — splice and download each

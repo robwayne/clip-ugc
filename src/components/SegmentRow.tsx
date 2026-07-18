@@ -34,6 +34,10 @@ interface SegmentRowProps {
   onPreview: () => void;
   looping: boolean;
   onLoop: () => void;
+  muted: boolean;
+  /** True when the segment's audio is replaced by the group's background audio. */
+  mutedByGroup: boolean;
+  onToggleMute: () => void;
 }
 
 export function SegmentRow({
@@ -65,6 +69,9 @@ export function SegmentRow({
   onPreview,
   looping,
   onLoop,
+  muted,
+  mutedByGroup,
+  onToggleMute,
 }: SegmentRowProps) {
   const invalid = !(segment.end > segment.start);
   const outOfRange =
@@ -175,6 +182,17 @@ export function SegmentRow({
           </button>
           <button
             className={`px-2 py-1 text-xs ${
+              muted ? 'btn rounded-lg bg-amber-500/20 text-amber-200' : 'btn-ghost'
+            }`}
+            onClick={onToggleMute}
+            title={muted ? 'Unmute this segment' : 'Mute this segment (silent in preview and splice)'}
+            aria-pressed={muted}
+            aria-label={muted ? 'Unmute segment' : 'Mute segment'}
+          >
+            {muted ? '🔇' : '🔊'}
+          </button>
+          <button
+            className={`px-2 py-1 text-xs ${
               looping ? 'btn rounded-lg bg-brand-600/30 text-brand-100' : 'btn-ghost'
             }`}
             onClick={onLoop}
@@ -208,6 +226,10 @@ export function SegmentRow({
           : outOfRange
           ? 'This range extends beyond the video length.'
           : `Duration ${formatTimestamp(segment.end - segment.start, true)}`}
+        {muted && <span className="ml-2 text-amber-300">🔇 muted</span>}
+        {!muted && mutedByGroup && (
+          <span className="ml-2 text-brand-300">🎵 audio from group background</span>
+        )}
       </div>
     </li>
   );

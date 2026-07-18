@@ -15,6 +15,14 @@ export interface PlayRange {
   start: number;
   end: number;
   sourceId: string;
+  /** Mute the video's audio while this range plays. */
+  muted?: boolean;
+}
+
+/** Optional background audio overlaid over a whole play sequence. */
+export interface BgAudio {
+  url: string;
+  start: number;
 }
 
 export function Editor() {
@@ -83,9 +91,24 @@ export function Editor() {
   const [currentTime, setCurrentTime] = useState(0);
 
   // ---- Playback sequence across per-source players ----
-  const sequenceRef = useRef<{ ranges: PlayRange[]; i: number; loop: boolean } | null>(null);
+  const sequenceRef = useRef<{
+    ranges: PlayRange[];
+    i: number;
+    loop: boolean;
+    bgAudio: BgAudio | null;
+  } | null>(null);
+  const bgAudioRef = useRef<HTMLAudioElement>(null);
   const [playingKey, setPlayingKey] = useState<string | null>(null);
   const [loopingKey, setLoopingKey] = useState<string | null>(null);
+
+  const unmuteAll = () => elsRef.current.forEach((el) => (el.muted = false));
+  const stopBgAudio = () => {
+    const bg = bgAudioRef.current;
+    if (bg) {
+      bg.pause();
+      bg.removeAttribute('src');
+    }
+  };
 
   // When idle, the focused source tracks the active source.
   useEffect(() => {
@@ -108,8 +131,18 @@ export function Editor() {
     pauseAllExcept(r.sourceId);
     setFocusedSourceId(r.sourceId);
     if (!el) return;
+    // With a bg-audio overlay every clip is muted; otherwise per-segment mute.
+    el.muted = seq.bgAudio != null || !!r.muted;
     el.currentTime = Math.max(0, r.start);
     void el.play().catch(() => {});
+    // Loop restart: re-sync the background audio to its segment start.
+    if (seq.bgAudio && idx === 0) {
+      const bg = bgAudioRef.current;
+      if (bg) {
+        bg.currentTime = Math.max(0, seq.bgAudio.start);
+        void bg.play().catch(() => {});
+      }
+    }
   }, []);
 
   // rAF loop advances the sequence with tight clip boundaries.
@@ -130,6 +163,8 @@ export function Editor() {
               enterRange(0);
             } else {
               el.pause();
+              stopBgAudio();
+              unmuteAll();
               sequenceRef.current = null;
               setPlayingKey(null);
               setLoopingKey(null);
@@ -149,6 +184,8 @@ export function Editor() {
   useEffect(() => {
     if (!isActive) {
       pauseAllExcept(null);
+      stopBgAudio();
+      unmuteAll();
       sequenceRef.current = null;
       setPlayingKey(null);
       setLoopingKey(null);
@@ -186,6 +223,8 @@ export function Editor() {
       sequenceRef.current = null;
       setPlayingKey(null);
       setLoopingKey(null);
+      stopBgAudio();
+      unmuteAll();
       const target = focusedRef.current;
       setFocusedSourceId(editor.activeSourceId);
       const el = getEl(target);
@@ -197,33 +236,46 @@ export function Editor() {
   );
 
   const startSequence = useCallback(
-    (ranges: PlayRange[], key: string, loop: boolean) => {
+    (ranges: PlayRange[], key: string, loop: boolean, bgAudio: BgAudio | null) => {
       const valid = ranges.filter((r) => r.end > r.start && elsRef.current.has(r.sourceId));
       if (valid.length === 0) return;
-      sequenceRef.current = { ranges: valid, i: 0, loop };
+      const bg = bgAudio && bgAudio.url ? bgAudio : null;
+      sequenceRef.current = { ranges: valid, i: 0, loop, bgAudio: bg };
       setPlayingKey(key);
       setLoopingKey(loop ? key : null);
+      // Prepare the background-audio overlay before starting the first clip.
+      const bgEl = bgAudioRef.current;
+      if (bg && bgEl) {
+        bgEl.src = bg.url;
+        bgEl.currentTime = Math.max(0, bg.start);
+        void bgEl.play().catch(() => {});
+      } else {
+        stopBgAudio();
+      }
       enterRange(0);
     },
     [enterRange]
   );
 
   const playSegments = useCallback(
-    (ranges: PlayRange[], key: string) => startSequence(ranges, key, false),
+    (ranges: PlayRange[], key: string, bgAudio: BgAudio | null = null) =>
+      startSequence(ranges, key, false, bgAudio),
     [startSequence]
   );
 
   const loopSegments = useCallback(
-    (ranges: PlayRange[], key: string) => {
+    (ranges: PlayRange[], key: string, bgAudio: BgAudio | null = null) => {
       if (loopingKey === key) {
         sequenceRef.current = null;
         setPlayingKey(null);
         setLoopingKey(null);
         pauseAllExcept(null);
+        stopBgAudio();
+        unmuteAll();
         setFocusedSourceId(editor.activeSourceId);
         return;
       }
-      startSequence(ranges, key, true);
+      startSequence(ranges, key, true, bgAudio);
     },
     [loopingKey, startSequence, editor.activeSourceId]
   );
@@ -233,12 +285,17 @@ export function Editor() {
     setPlayingKey(null);
     setLoopingKey(null);
     pauseAllExcept(null);
+    stopBgAudio();
+    unmuteAll();
     setFocusedSourceId(editor.activeSourceId);
   }, [editor.activeSourceId]);
 
   const previewRange = useCallback(
-    (start: number, end: number, sourceId: string) =>
-      playSegments([{ start, end, sourceId }], `preview:${sourceId}:${start}:${end}`),
+    (start: number, end: number, sourceId: string, muted: boolean) =>
+      playSegments(
+        [{ start, end, sourceId, muted }],
+        `preview:${sourceId}:${start}:${end}`
+      ),
     [playSegments]
   );
 
@@ -270,6 +327,9 @@ export function Editor() {
 
   return (
     <div className="space-y-5">
+      {/* Hidden element that overlays background audio during group preview. */}
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+      <audio ref={bgAudioRef} className="hidden" />
       <div className="card">
         <label className="label" htmlFor="session-title">
           Session name

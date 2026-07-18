@@ -80,6 +80,7 @@ function serializeForSave(e: EditorState): string {
       end: s.end,
       groupId: s.groupId,
       sourceId: s.sourceId,
+      muted: !!s.muted,
     })),
     groups: e.groups.map((g) => ({
       id: g.id,
@@ -662,6 +663,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         end: s.end,
         groupId: s.groupId ?? null,
         sourceId: s.sourceId,
+        muted: s.muted ?? false,
       })),
       activeGroupId: null,
       selectedSegmentId: null,

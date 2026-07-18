@@ -32,8 +32,8 @@ function sourceKeyOf(file: File): string {
   return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
-function clipCacheKey(sourceKey: string, start: number, end: number): string {
-  return `${sourceKey}:${start.toFixed(3)}:${end.toFixed(3)}`;
+function clipCacheKey(sourceKey: string, start: number, end: number, muted: boolean): string {
+  return `${sourceKey}:${start.toFixed(3)}:${end.toFixed(3)}:${muted ? 'm' : 'a'}`;
 }
 
 function resetCacheState(): void {
@@ -130,6 +130,8 @@ export interface SpliceItem {
   start: number;
   end: number;
   file: File;
+  /** When true, the clip is produced with silent audio. */
+  muted?: boolean;
 }
 
 /**
@@ -200,7 +202,8 @@ export async function renderSplice(
       currentClipNumber = i + 1;
       clipBaseRatio = 0.05 + i * perClip;
       const sourceKey = sourceKeyOf(item.file);
-      const key = clipCacheKey(sourceKey, item.start, item.end);
+      const muted = !!item.muted;
+      const key = clipCacheKey(sourceKey, item.start, item.end, muted);
 
       const cached = clipCache.get(key);
       if (cached) {
@@ -216,13 +219,22 @@ export async function renderSplice(
       report(clipBaseRatio, `Cutting clip ${i + 1} of ${ordered.length}…`);
       const inputName = await ensureInput(ffmpeg, item.file);
       const clipName = `cut_${clipCounter++}.mp4`;
+      const dur = (item.end - item.start).toFixed(3);
+      // A muted clip pairs the trimmed video with a silent audio track
+      // (anullsrc) so every clip has a consistent stream layout for concat.
+      const args = muted
+        ? [
+            '-ss', item.start.toFixed(3),
+            '-i', inputName,
+            '-f', 'lavfi',
+            '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+            '-t', dur,
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+          ]
+        : ['-ss', item.start.toFixed(3), '-i', inputName, '-t', dur];
       await ffmpeg.exec([
-        '-ss',
-        item.start.toFixed(3),
-        '-i',
-        inputName,
-        '-t',
-        (item.end - item.start).toFixed(3),
+        ...args,
         '-c:v',
         'libx264',
         '-preset',
@@ -237,6 +249,10 @@ export async function renderSplice(
         '160k',
         '-ac',
         '2',
+        // Normalize the audio sample rate so clips (muted-silence vs real, and
+        // across different sources) concatenate with a consistent stream layout.
+        '-ar',
+        '44100',
         '-vsync',
         'cfr',
         '-avoid_negative_ts',

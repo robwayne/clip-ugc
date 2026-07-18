@@ -7,16 +7,17 @@ import { computeBuckets, isValidSegment, totalOutputDuration } from '@/lib/group
 import { SegmentRow } from './SegmentRow';
 import { GroupAudioControl } from './GroupAudioControl';
 
-type Range = { start: number; end: number; sourceId: string };
+type Range = { start: number; end: number; sourceId: string; muted?: boolean };
+type BgAudio = { url: string; start: number } | null;
 
 interface SegmentListProps {
   duration: number | null;
   displaySourceId: string | null;
   getCurrentTime: () => number;
   seekTo: (seconds: number) => void;
-  previewRange: (start: number, end: number, sourceId: string) => void;
-  playSegments: (ranges: Range[], key: string) => void;
-  loopSegments: (ranges: Range[], key: string) => void;
+  previewRange: (start: number, end: number, sourceId: string, muted: boolean) => void;
+  playSegments: (ranges: Range[], key: string, bgAudio?: BgAudio) => void;
+  loopSegments: (ranges: Range[], key: string, bgAudio?: BgAudio) => void;
   stopPlayback: () => void;
   playingKey: string | null;
   loopingKey: string | null;
@@ -71,10 +72,16 @@ export function SegmentList({
   const totalOutput = totalOutputDuration(segments);
   const invalidCount = segments.filter((s) => !(s.end > s.start)).length;
 
+  const groupHasBgAudio = (groupId: string | null) =>
+    groupId != null && groupById.get(groupId)?.audio != null;
+  // A segment is silent in preview if it's muted or its group replaces audio.
+  const rangeMuted = (s: { muted?: boolean; groupId: string | null }) =>
+    !!s.muted || groupHasBgAudio(s.groupId);
+
   const allRanges: Range[] = buckets
     .flatMap((b) => b.segments)
     .filter(isValidSegment)
-    .map((s) => ({ start: s.start, end: s.end, sourceId: s.sourceId }));
+    .map((s) => ({ start: s.start, end: s.end, sourceId: s.sourceId, muted: rangeMuted(s) }));
 
   const handleBulkAdd = () => {
     const raw = prompt(
@@ -146,7 +153,13 @@ export function SegmentList({
             const bucketKey = `group:${bucket.groupId ?? '__ungrouped__'}`;
             const bucketRanges: Range[] = bucket.segments
               .filter(isValidSegment)
-              .map((s) => ({ start: s.start, end: s.end, sourceId: s.sourceId }));
+              .map((s) => ({ start: s.start, end: s.end, sourceId: s.sourceId, muted: rangeMuted(s) }));
+            // If this group has a bg-audio segment (and it's loaded), overlay it
+            // during Play group / Loop — simulating the spliced output.
+            const bucketBgAudio: BgAudio =
+              bucket.groupId != null && groupById.get(bucket.groupId)?.audio && audioUrl
+                ? { url: audioUrl, start: groupById.get(bucket.groupId)!.audio!.start }
+                : null;
             const isPlaying = playingKey === bucketKey;
             const isLooping = loopingKey === bucketKey;
             const isCollapsed = collapsed.has(bucketKey);
@@ -187,8 +200,12 @@ export function SegmentList({
                       ) : (
                         <button
                           className="btn-ghost px-2 py-1 text-xs"
-                          onClick={() => playSegments(bucketRanges, bucketKey)}
-                          title="Play this group's clips back-to-back, in order"
+                          onClick={() => playSegments(bucketRanges, bucketKey, bucketBgAudio)}
+                          title={
+                            bucketBgAudio
+                              ? "Play this group with its background audio (video muted)"
+                              : "Play this group's clips back-to-back, in order"
+                          }
                         >
                           ▶ Play group
                         </button>
@@ -199,7 +216,7 @@ export function SegmentList({
                             ? 'btn rounded-lg bg-brand-600/30 text-brand-100'
                             : 'btn-ghost'
                         }`}
-                        onClick={() => loopSegments(bucketRanges, bucketKey)}
+                        onClick={() => loopSegments(bucketRanges, bucketKey, bucketBgAudio)}
                         title={
                           isLooping
                             ? 'Looping this group — click to stop'
@@ -270,14 +287,26 @@ export function SegmentList({
                       onSetStart={() => updateSegment(segment.id, { start: round(getCurrentTime()) })}
                       onSetEnd={() => updateSegment(segment.id, { end: round(getCurrentTime()) })}
                       onSeekStart={() => seekTo(segment.start)}
-                      onPreview={() => previewRange(segment.start, segment.end, segment.sourceId)}
+                      onPreview={() =>
+                        previewRange(segment.start, segment.end, segment.sourceId, rangeMuted(segment))
+                      }
                       looping={loopingKey === `seg:${segment.id}`}
                       onLoop={() =>
                         loopSegments(
-                          [{ start: segment.start, end: segment.end, sourceId: segment.sourceId }],
+                          [
+                            {
+                              start: segment.start,
+                              end: segment.end,
+                              sourceId: segment.sourceId,
+                              muted: rangeMuted(segment),
+                            },
+                          ],
                           `seg:${segment.id}`
                         )
                       }
+                      muted={!!segment.muted}
+                      mutedByGroup={groupHasBgAudio(segment.groupId) && !segment.muted}
+                      onToggleMute={() => updateSegment(segment.id, { muted: !segment.muted })}
                     />
                   ))}
                 </ul>

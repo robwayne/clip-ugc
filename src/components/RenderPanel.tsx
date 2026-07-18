@@ -191,11 +191,16 @@ export function RenderPanel() {
   );
 
   const itemsFor = useCallback(
-    (segs: Segment[]) =>
+    (segs: Segment[], applyMute: boolean) =>
       segs
         .filter(isValidSegment)
-        .map((s) => ({ start: s.start, end: s.end, file: fileBySource.get(s.sourceId) ?? null }))
-        .filter((it): it is { start: number; end: number; file: File } => it.file != null),
+        .map((s) => ({
+          start: s.start,
+          end: s.end,
+          file: fileBySource.get(s.sourceId) ?? null,
+          muted: applyMute ? !!s.muted : false,
+        }))
+        .filter((it): it is { start: number; end: number; file: File; muted: boolean } => it.file != null),
     [fileBySource]
   );
 
@@ -213,7 +218,9 @@ export function RenderPanel() {
     (groupId: string | null, segments: Segment[]) => {
       const a = groupAudio(groupId);
       const audioPart = a ? `${audioKey}:${a.start}:${a.end}` : 'noaudio';
-      return signatureOf(segments) + '|' + audioPart;
+      // Per-segment mute only matters when the group's audio isn't replaced.
+      const mutePart = a ? '' : segments.map((s) => (s.muted ? '1' : '0')).join('');
+      return signatureOf(segments) + '|' + audioPart + '|' + mutePart;
     },
     [groupAudio, audioKey]
   );
@@ -241,7 +248,8 @@ export function RenderPanel() {
 
   const spliceGroup = useCallback(
     (groupId: string | null, name: string, segments: Segment[]) => {
-      const items = itemsFor(segments);
+      const applyMute = groupAudio(groupId) == null;
+      const items = itemsFor(segments, applyMute);
       if (items.length === 0) return;
       runRender(bucketKey(groupId), bucketSig(groupId, segments), (signal, onProgress) =>
         renderSplice(items, {
@@ -253,11 +261,11 @@ export function RenderPanel() {
         })
       );
     },
-    [itemsFor, baseName, bucketSig, audioTrackFor, runRender]
+    [itemsFor, baseName, bucketSig, audioTrackFor, groupAudio, runRender]
   );
 
   const spliceFinal = useCallback(() => {
-    if (itemsFor(orderedAll).length === 0) return;
+    if (itemsFor(orderedAll, false).length === 0) return;
     const signature = buckets.map((b) => bucketSig(b.groupId, b.segments)).join('||') + '|final';
     runRender(FINAL_KEY, signature, async (signal, onProgress) => {
       // Render each group (with its own audio), reusing fresh per-group splices,
@@ -272,7 +280,7 @@ export function RenderPanel() {
         if (st?.phase === 'done' && st.result && st.signature === bucketSig(b.groupId, b.segments)) {
           parts.push(st.result);
         } else {
-          const res = await renderSplice(itemsFor(b.segments), {
+          const res = await renderSplice(itemsFor(b.segments, groupAudio(b.groupId) == null), {
             outputBaseName: baseName,
             label: b.name,
             audioTrack: audioTrackFor(b.groupId),

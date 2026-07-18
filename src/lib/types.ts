@@ -9,6 +9,8 @@ export interface Segment {
   groupId: string | null;
   /** Which source video this segment is cut from. */
   sourceId: string;
+  /** When true, this segment's audio is silenced (in preview and at splice). */
+  muted?: boolean;
 }
 
 /** A persisted reference to a source video (metadata only; no file). */
@@ -59,6 +61,7 @@ export interface ClipSession {
     end: number;
     groupId: string | null;
     sourceId: string;
+    muted?: boolean;
   }>;
   groups: Group[];
   /** The session's background-audio track source, if any. */
